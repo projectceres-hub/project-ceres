@@ -1,0 +1,14 @@
+1. Imports
+2. Settings
+    2.1 Errors
+3. Commands
+    3.1 Without Arguments
+    3.2 With Arguments
+4. Obsidian
+    4.1 Vaults
+5. Chat GPT
+6. Boot
+    6.1 Registration of Commands
+    6.2 Load
+7. User interactions
+    7.1 Loop
