@@ -1,0 +1,20 @@
+# Byte-compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environment & settings
+.env
+variables.env
+settings.json
+vaults.json
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# VSCode settings
+.vscode/
+
+# Obsidian workspace files
+.obsidian/
