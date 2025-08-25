@@ -1,0 +1,40 @@
+system: dnd-5e
+source: "SRD 5.2.1"
+license: CC-BY-4.0
+
+rules:
+  - type: monster
+    scope_hint: "Monsters A–Z"
+    start:
+      # Ignore the literal "Monsters" header, grab proper names
+      name_pattern: "^(?!Monsters$)[A-Z][A-Za-z’'()\\- ]{2,}(?:\\s+[A-Z][A-Za-z’'()\\- ]+){0,3}$"
+      must_contain_next_lines:
+        - "(?i)\\bAC\\b"
+        - "(?i)\\bHP\\b"
+        - "(?i)initiative"
+      lookahead_lines: 8
+    end: "next_start"
+    fields:
+      cr: "(?i)challenge\\s*([0-9/]+)"
+      size: "(?mi)^(Tiny|Small|Medium|Large|Huge|Gargantuan)\\b"
+      ac: "(?i)\\bAC\\b\\s*([0-9]+)"
+      hp: "(?i)\\bHP\\b\\s*([0-9]+)"
+      initiative: "(?i)initiative\\s*([0-9]+)"
+    tags: ["srd", "monster", "dnd5e"]
+
+  - type: spell
+    start:
+      name_pattern: "^[A-Z][A-Za-z’'()\\- ]{2,}$"
+      must_contain_next_lines:
+        - "(?i)(cantrip|[1-9]st|2nd|3rd|[4-9]th)-level"
+        - "(?i)(casting\\s*time|range|components)"
+      lookahead_lines: 8
+    end: "next_start"
+    fields:
+      level: "(?i)(cantrip|[1-9]st|2nd|3rd|[4-9]th)-level"
+      school: "(?i)(abjuration|conjuration|divination|enchantment|evocation|illusion|necromancy|transmutation)"
+      time: "(?i)casting\\s*time\\s*:?\\s*(.+)"
+      range: "(?i)range\\s*:?\\s*(.+)"
+      components: "(?i)components\\s*:?\\s*(.+)"
+      duration: "(?i)duration\\s*:?\\s*(.+)"
+    tags: ["srd", "spell", "dnd5e"]

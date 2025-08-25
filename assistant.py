@@ -27,6 +27,9 @@ from core.vaults import (
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.completion import NestedCompleter
+from core.search_index import cmd_search
+from core.search_index import build_index, search_index
+
 
 
 commands = {}
@@ -289,6 +292,22 @@ register_command(
     lambda args: print("Use 'send' instead. This command is deprecated."),
     "Deprecated. Use 'send' instead."
 )
+register_command(
+    "search",
+    lambda args: cmd_search(args, vaults, current_vault, error),
+    "Search notes using title, type, system, or tags (e.g., 'spell system:dnd-5e')"
+)
+register_command(
+    "index",
+    lambda args: build_index(vaults, current_vault, error),
+    "Build or rebuild the search index for the current vault."
+)
+
+register_command(
+    "find",
+    lambda args: search_index(args, vaults, current_vault, error),
+    "Search notes by keyword or tag: find keyword OR find tag:undead"
+)
 
 # 6.2 LOAD
 
@@ -348,5 +367,3 @@ while True:
             print(f"Error running command '{cmd}': {e}")
     else:
         error("unknown_command")
-
-
