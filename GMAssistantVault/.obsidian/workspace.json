@@ -34,9 +34,21 @@
               "icon": "lucide-file",
               "title": "Coding Notes"
             }
+          },
+          {
+            "id": "906e9bf66aa3c7ba",
+            "type": "leaf",
+            "state": {
+              "type": "release-notes",
+              "state": {
+                "currentVersion": "1.9.10"
+              },
+              "icon": "lucide-book-up",
+              "title": "Release Notes 1.9.10"
+            }
           }
         ],
-        "currentTab": 1
+        "currentTab": 2
       },
       {
         "id": "07949f06c7c112f8",
@@ -192,6 +204,7 @@
   },
   "left-ribbon": {
     "hiddenItems": {
+      "bases:Create new base": false,
       "switcher:Open quick switcher": false,
       "graph:Open graph view": false,
       "canvas:Create new canvas": false,
@@ -200,7 +213,7 @@
       "command-palette:Open command palette": false
     }
   },
-  "active": "1d944b527e8e3935",
+  "active": "906e9bf66aa3c7ba",
   "lastOpenFiles": [
     "SRDs/dnd-5e/monster/weasel.md",
     "SRDs/dnd-5e/monster/warhorse.md",

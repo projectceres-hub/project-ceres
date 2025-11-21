@@ -1,0 +1,191 @@
+# ===================================================================
+#  CURSOR RULES FOR PROJECT CERES
+#  These rules define HOW the AI should edit, refactor, and write code.
+#  They should be followed for every action the AI takes in this repo.
+# ===================================================================
+
+version: 1
+
+# -------------------------------------------------------------------
+#  HIGH-LEVEL IDENTITY
+# -------------------------------------------------------------------
+identity:
+  purpose: >
+    Project Ceres is a Python-based terminal assistant for managing
+    and editing Obsidian markdown vaults. The AI acts as a senior
+    Python engineer responsible for maintaining a clean, modular,
+    maintainable architecture across the whole codebase.
+
+  core_principles:
+    - Avoid global variables.
+    - Avoid circular imports.
+    - Use dependency injection.
+    - Keep modules focused and single-purpose (SRP).
+    - Maintain backward compatibility unless told otherwise.
+    - Prefer explicit over implicit behavior.
+    - Always write clear docstrings and type hints.
+
+# -------------------------------------------------------------------
+#  CODING STANDARDS
+# -------------------------------------------------------------------
+coding:
+  python_version: "3.11+"
+
+  style:
+    type_hints: required
+    docstrings: google
+    naming:
+      classes: PascalCase
+      functions: snake_case
+      variables: snake_case
+      constants: UPPER_SNAKE_CASE
+
+  refactors:
+    allow_behavior_changes: false
+    preserve_cli_commands: true
+    minimize_diff_size: true
+    explain_refactors: true
+
+  modularity:
+    no_globals: true
+    no_circular_imports: true
+    dependency_injection: true
+    config_object_required: true
+
+  files_to_monitor:
+    - assistant.py
+    - gpt.py
+    - notes.py
+    - templates.py
+    - vaults.py
+    - scheduler.py
+    - config.py
+    - automation/job.py
+    - automation/task_scheduler.py
+    - pdf_tools/
+    - tags.py
+    - search_index.py
+    - srd_index.py
+    - audio.py
+    - history.py
+    - session_scheduler.py
+
+  formatting:
+    enforce_indentation: true
+    indentation_style: "spaces"
+    indentation_size: 4
+    strict_indentation_for_blocks: true
+    rules:
+      - "Indent nested blocks exactly 4 spaces deeper than their parent."
+      - "Never mix tabs and spaces."
+      - "Match the indentation style of the surrounding code."
+      - "When modifying a function, preserve all existing indentation levels."
+      - "When generating new code blocks, always start at column 0 unless code is nested."
+      - "When editing inside a class or nested function, reflect the current indentation depth exactly."
+
+# -------------------------------------------------------------------
+#  RULES FOR NEW MODULES
+# -------------------------------------------------------------------
+new_modules:
+  must_have:
+    - type hints
+    - top-level module docstring
+    - no side effects at import time
+    - pure functions where possible
+    - clear public API
+
+  restricted:
+    - no writing files during import
+    - no hidden state
+    - no environment-dependent behavior unless explicit
+
+# -------------------------------------------------------------------
+#  RULES FOR EDITS / INLINE CHANGES
+# -------------------------------------------------------------------
+editing:
+  ask_before_large_change: true
+  keep_original_intent: true
+  minimize_breaking_changes: true
+  require_summary_of_changes: true
+
+  diff_format:
+    required: true
+    explain_each_chunk: true
+
+# -------------------------------------------------------------------
+#  TESTING REQUIREMENTS
+# -------------------------------------------------------------------
+testing:
+  framework: pytest
+  expectations:
+    - new modules should include corresponding tests
+    - scheduler must have deterministic tests
+    - avoid long sleeps / time-heavy tests
+    - test edge cases in vault operations
+
+# -------------------------------------------------------------------
+#  FILE SAFETY
+# -------------------------------------------------------------------
+safety:
+  never_edit:
+    - LICENSE
+    - README.md
+    - .gitignore
+  never_delete_files: true
+
+# -------------------------------------------------------------------
+#  TASK BEHAVIOR
+# -------------------------------------------------------------------
+tasks:
+  planner_mode: true
+  break_into_steps: true
+  confirm_assumptions_before_action: true
+
+# -------------------------------------------------------------------
+#  OUTPUT RULES
+# -------------------------------------------------------------------
+output:
+  explanations_required: true
+  concise_summaries: true
+  code_blocks_required: true
+  no_extraneous_text: true
+
+# -------------------------------------------------------------------
+#  DOCUMENTATION MAINTENANCE
+# -------------------------------------------------------------------
+documentation:
+  features_file: PROJECT_FEATURES.md
+  update_after_changes: true
+  rules:
+    - "After implementing new features or making significant changes, update PROJECT_FEATURES.md"
+    - "Add new commands to the 'Complete Command Reference' section"
+    - "Add new modules to the 'Module Structure' section"
+    - "Document new features in 'Recent Changes & Additions' section"
+    - "Update feature descriptions if functionality changes"
+    - "Keep command examples accurate and up-to-date"
+
+# -------------------------------------------------------------------
+#  STABILITY RULES (STRUCTURE & INDENTATION)
+# -------------------------------------------------------------------
+stability:
+  preserve_existing_structure: true
+  preserve_existing_indentation: true
+  avoid_reformatting_unmodified_code: true
+  small_changes_preferred: true
+
+# -------------------------------------------------------------------
+#  DIFF & WHITESPACE RULES
+# -------------------------------------------------------------------
+diffs:
+  clean_diffs_required: true
+  preserve_original_indentation: true
+  show_context_lines: true
+  avoid_whitespace_only_changes: true
+
+# -------------------------------------------------------------------
+#  VALIDATION / AUTO-CHECKS
+# -------------------------------------------------------------------
+validation:
+  require_python_syntax_check: true
+  require_indentation_check: true
+  reject_output_with_inconsistent_indentation: true

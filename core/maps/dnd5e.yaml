@@ -1,0 +1,7 @@
+default_title: "SRD Conversion"
+frontmatter:
+  system: "dnd-5e"
+  tags: ["srd", "imported"]
+rename:
+  - { pattern: "^\\bAC\\b", replace: "Armor Class" }
+  - { pattern: "^\\bHP\\b", replace: "Hit Points" }

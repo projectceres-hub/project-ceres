@@ -1,0 +1,15 @@
+default_title: "WWN/OSR Conversion"
+frontmatter:
+  system: "wwn"
+  tags: ["osr", "imported"]
+
+rename:
+  # Common OSR abbreviations
+  - { pattern: "^\bHD\b", replace: "Hit Dice" }
+  - { pattern: "^\bAC\b", replace: "Armor Class" }
+  - { pattern: "^\bTHAC0\b", replace: "To Hit Armor Class 0" }
+  - { pattern: "^\bHP\b", replace: "Hit Points" }
+
+  # Optional: convert Morale / Save shorthand
+  - { pattern: "^\bMor\b", replace: "Morale" }
+  - { pattern: "^\bSV\b", replace: "Saving Throw" }

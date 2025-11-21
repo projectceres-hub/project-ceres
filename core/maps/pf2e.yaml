@@ -1,0 +1,19 @@
+default_title: "PF2e Conversion"
+frontmatter:
+  system: "pf2e"
+  tags: ["srd", "imported"]
+
+rename:
+  # Core stats
+  - { pattern: "^\bAC\b", replace: "Armor Class" }
+  - { pattern: "^\bHP\b", replace: "Hit Points" }
+  - { pattern: "^\bPerception\b", replace: "Perception (PF2e Save)" }
+  - { pattern: "^\bFort\b", replace: "Fortitude" }
+  - { pattern: "^\bRef\b", replace: "Reflex" }
+  - { pattern: "^\bWill\b", replace: "Will" }
+
+  # Actions (replace the ◆ symbols with words)
+  - { pattern: "◆◆◆", replace: "[Three Actions]" }
+  - { pattern: "◆◆", replace: "[Two Actions]" }
+  - { pattern: "◆", replace: "[One Action]" }
+  - { pattern: "↺", replace: "[Reaction]" }

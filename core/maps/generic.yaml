@@ -1,0 +1,7 @@
+default_title: "Generic Conversion"
+frontmatter:
+  system: "generic"
+  tags: ["imported", "unmapped"]
+
+# No rename rules — preserves all text as-is
+rename: []
