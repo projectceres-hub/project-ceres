@@ -6,10 +6,18 @@ easy-to-share messages with clickable calendar links.
 """
 
 import os
+import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from core.config import Config
+else:
+    # Avoid circular import at runtime
+    Config = object
 try:
     from zoneinfo import ZoneInfo
 except ImportError:
@@ -391,6 +399,21 @@ def schedule_next_session(prompt_input_func: Callable[[str], str]) -> Optional[s
         except Exception as e:
             print(f"Warning: Unexpected error writing share message file: {e}")
         
+        # Also save JSON metadata file for easier parsing
+        json_path = exports_dir / "next_session.json"
+        try:
+            json_data = {
+                "title": info.title,
+                "start": info.start.isoformat(),
+                "end": info.end.isoformat(),
+                "description": info.description
+            }
+            with open(json_path, "w", encoding="utf-8") as f:
+                json.dump(json_data, f, indent=2)
+        except (PermissionError, OSError):
+            # Non-fatal error, continue
+            pass
+        
         # Print results
         print("\n" + "="*60)
         print("Session scheduled successfully!")
@@ -411,5 +434,120 @@ def schedule_next_session(prompt_input_func: Callable[[str], str]) -> Optional[s
         return None
     except Exception as e:
         print(f"\nUnexpected error: {e}")
+        return None
+
+
+def get_next_session_info(config: "Config") -> Optional[SessionInfo]:
+    """
+    Return the next session information if available, otherwise None.
+    
+    Reads session information from the saved ICS file or JSON metadata file.
+    If multiple files exist, returns the session with the earliest start time
+    that is still in the future.
+    
+    Args:
+        config: Config object (unused for now, but kept for future extensibility)
+        
+    Returns:
+        SessionInfo object if a valid upcoming session is found, None otherwise
+    """
+    # First, try to read from JSON metadata file (if it exists)
+    exports_dir = Path("exports")
+    json_path = exports_dir / "next_session.json"
+    
+    if json_path.exists():
+        try:
+            with open(json_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            
+            # Parse datetime strings
+            start_str = data.get("start")
+            end_str = data.get("end")
+            if start_str and end_str:
+                try:
+                    # Try parsing ISO format
+                    start_dt = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
+                    end_dt = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
+                    
+                    # Check if session is in the future
+                    if (start_dt > datetime.now(start_dt.tzinfo)) if start_dt.tzinfo else (start_dt > datetime.now()):
+                        return SessionInfo(
+                            title=data.get("title", "TTRPG Session"),
+                            start=start_dt,
+                            end=end_dt,
+                            description=data.get("description", "")
+                        )
+                except (ValueError, AttributeError):
+                    # If parsing fails, fall through to ICS parsing
+                    pass
+        except (json.JSONDecodeError, PermissionError, OSError):
+            # If JSON read fails, fall through to ICS parsing
+            pass
+    
+    # Fallback: parse ICS file
+    ics_path = exports_dir / "next_session.ics"
+    if not ics_path.exists():
+        return None
+    
+    try:
+        with open(ics_path, "r", encoding="utf-8") as f:
+            ics_content = f.read()
+        
+        # Extract fields from ICS format
+        # ICS format: SUMMARY:title, DTSTART:datetime, DTEND:datetime, DESCRIPTION:description
+        title_match = re.search(r'SUMMARY:(.+?)(?:\r?\n|$)', ics_content)
+        start_match = re.search(r'DTSTART[^:]*:(.+?)(?:\r?\n|$)', ics_content)
+        end_match = re.search(r'DTEND[^:]*:(.+?)(?:\r?\n|$)', ics_content)
+        desc_match = re.search(r'DESCRIPTION:(.+?)(?:\r?\n(?:[^\s]|DESCRIPTION)|END:VEVENT)', ics_content, re.DOTALL)
+        
+        if not start_match:
+            return None
+        
+        # Parse datetime (ICS format: YYYYMMDDTHHMMSS or YYYYMMDDTHHMMSSZ)
+        start_str = start_match.group(1).strip()
+        try:
+            # Parse ICS datetime format: YYYYMMDDTHHMMSS
+            start_dt = datetime.strptime(start_str[:15], "%Y%m%dT%H%M%S")
+        except ValueError:
+            return None
+        
+        # Parse end time
+        end_dt = None
+        if end_match:
+            end_str = end_match.group(1).strip()
+            try:
+                end_dt = datetime.strptime(end_str[:15], "%Y%m%dT%H%M%S")
+            except ValueError:
+                pass
+        
+        if not end_dt:
+            # Default to 4 hours if end time not found
+            end_dt = start_dt + timedelta(hours=4)
+        
+        # Check if session is in the future
+        if start_dt <= datetime.now():
+            return None
+        
+        # Extract title
+        title = "TTRPG Session"
+        if title_match:
+            title = title_match.group(1).strip()
+            # Unescape ICS text
+            title = title.replace("\\,", ",").replace("\\;", ";").replace("\\\\", "\\").replace("\\n", "\n")
+        
+        # Extract description
+        description = ""
+        if desc_match:
+            description = desc_match.group(1).strip()
+            # Unescape ICS text
+            description = description.replace("\\,", ",").replace("\\;", ";").replace("\\\\", "\\").replace("\\n", "\n")
+        
+        return SessionInfo(
+            title=title,
+            start=start_dt,
+            end=end_dt,
+            description=description
+        )
+    except (PermissionError, OSError, ValueError, AttributeError):
         return None
 

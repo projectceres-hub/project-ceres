@@ -221,3 +221,258 @@ def sync_templates_job(context: "Config") -> None:
         print(f"Error: Failed to sync templates: {e}")
     except Exception as e:
         print(f"Error: Unexpected error during template sync: {e}")
+
+
+def rebuild_srd_index_job(context: "Config") -> None:
+    """
+    Rebuild the SRD index using paths from the context.
+    
+    Uses context.current_vault to determine the vault path, then indexes
+    the SRDs/ directory under that vault and saves the index to
+    .ceres_index/records.json in the vault root.
+    
+    Args:
+        context: Config object containing:
+            - current_vault: Name of the current vault
+            - vaults: Dictionary mapping vault names to paths
+    """
+    from core.srd_index import build_srd_index
+    
+    if not context.current_vault:
+        raise ValueError("No current vault set in context")
+    
+    if context.current_vault not in context.vaults:
+        raise ValueError(f"Current vault '{context.current_vault}' not found in vaults")
+    
+    vault_name = context.current_vault
+    vault_path = Path(context.vaults[vault_name])
+    
+    if not vault_path.exists() or not vault_path.is_dir():
+        raise ValueError(f"Vault path does not exist or is not a directory: {vault_path}")
+    
+    # Determine SRD directory and index output path
+    srd_dir = vault_path / "SRDs"
+    index_dir = vault_path / ".ceres_index"
+    index_path = index_dir / "records.json"
+    
+    # Build the index
+    build_srd_index(srd_dir, index_path)
+
+
+def session_reminder_job(context: "Config") -> None:
+    """
+    Check if there is an upcoming session and, if so, print a reminder message.
+    
+    Checks for upcoming sessions within the configured reminder window
+    (default: 24 hours). If a session is found, prints a reminder to the console.
+    
+    Future extension:
+    - Hook into Discord, email, or desktop notifications
+    - Support multiple reminder windows (e.g., 24h, 1h before)
+    
+    Args:
+        context: Config object containing:
+            - session_reminder_hours_before: Hours before session to send reminder (default: 24)
+    """
+    from core.session_scheduler import get_next_session_info
+    from datetime import datetime, timedelta
+    
+    # Get reminder window from config (default: 24 hours)
+    reminder_hours = getattr(context, 'session_reminder_hours_before', 24)
+    
+    # Get next session info
+    session_info = get_next_session_info(context)
+    if not session_info:
+        # No upcoming session found
+        return
+    
+    # Calculate time until session
+    now = datetime.now(session_info.start.tzinfo) if session_info.start.tzinfo else datetime.now()
+    time_until = session_info.start - now
+    
+    # Check if session is within reminder window
+    reminder_window = timedelta(hours=reminder_hours)
+    if time_until > reminder_window:
+        # Too far in the future, don't remind yet
+        return
+    
+    if time_until <= timedelta(0):
+        # Session is in the past or happening now
+        return
+    
+    # Format time until session
+    hours = int(time_until.total_seconds() / 3600)
+    minutes = int((time_until.total_seconds() % 3600) / 60)
+    
+    if hours > 0:
+        time_str = f"{hours} hour{'s' if hours != 1 else ''}"
+        if minutes > 0:
+            time_str += f" {minutes} minute{'s' if minutes != 1 else ''}"
+    else:
+        time_str = f"{minutes} minute{'s' if minutes != 1 else ''}"
+    
+    # Format session start time
+    if session_info.start.tzinfo:
+        start_str = session_info.start.strftime("%A, %B %d at %I:%M %p %Z")
+    else:
+        start_str = session_info.start.strftime("%A, %B %d at %I:%M %p")
+    
+    # Print reminder
+    print("=" * 60)
+    print("📅 SESSION REMINDER")
+    print("=" * 60)
+    print(f"Upcoming Session: {session_info.title}")
+    print(f"Starts in: {time_str}")
+    print(f"Date & Time: {start_str}")
+    
+    duration = session_info.end - session_info.start
+    duration_hours = int(duration.total_seconds() / 3600)
+    duration_minutes = int((duration.total_seconds() % 3600) / 60)
+    if duration_minutes == 0:
+        duration_str = f"{duration_hours} hour{'s' if duration_hours != 1 else ''}"
+    else:
+        duration_str = f"{duration_hours}h {duration_minutes}m"
+    print(f"Duration: {duration_str}")
+    
+    if session_info.description:
+        print(f"\nDescription: {session_info.description}")
+    
+    print("=" * 60)
+
+
+def clean_cache_job(context: "Config") -> None:
+    """
+    Remove all temporary files used by indexing, PDF processing, or GPT scratch output.
+    
+    Safely removes temporary files and directories:
+    - .ceres_index/tmp/ directory (if exists) in current vault
+    - pdf_tools/tmp/ directory (if exists) in project root
+    - *.tmp.md or *.tmp files inside the current vault
+    - Any leftover OCR scratch files (if present)
+    
+    Does NOT delete:
+    - .ceres_index/records.json (the actual index file)
+    - Backup files (.bak files in .ceres_history/)
+    - Any non-temporary files
+    
+    Args:
+        context: Config object containing:
+            - current_vault: Name of the current vault
+            - vaults: Dictionary mapping vault names to paths
+            
+    Raises:
+        ValueError: If current_vault is not set or not found in vaults
+        OSError: If file operations fail (non-critical, continues with other files)
+    """
+    project_root = Path(__file__).parent.parent
+    files_removed = 0
+    
+    # Clean .ceres_index/tmp/ in current vault
+    if context.current_vault and context.current_vault in context.vaults:
+        vault_path = Path(context.vaults[context.current_vault])
+        if vault_path.exists() and vault_path.is_dir():
+            index_tmp_dir = vault_path / ".ceres_index" / "tmp"
+            if index_tmp_dir.exists() and index_tmp_dir.is_dir():
+                try:
+                    for item in index_tmp_dir.rglob("*"):
+                        if item.is_file():
+                            item.unlink()
+                            files_removed += 1
+                        elif item.is_dir():
+                            # Remove empty directories
+                            try:
+                                item.rmdir()
+                            except OSError:
+                                # Directory not empty, skip
+                                pass
+                    # Remove tmp directory itself if empty
+                    try:
+                        index_tmp_dir.rmdir()
+                    except OSError:
+                        # Directory not empty, skip
+                        pass
+                except (PermissionError, OSError) as e:
+                    print(f"Warning: Error cleaning .ceres_index/tmp/: {e}")
+            
+            # Clean *.tmp.md and *.tmp files in vault
+            try:
+                for pattern in ["*.tmp.md", "*.tmp"]:
+                    for tmp_file in vault_path.rglob(pattern):
+                        if tmp_file.is_file():
+                            try:
+                                tmp_file.unlink()
+                                files_removed += 1
+                            except (PermissionError, OSError) as e:
+                                print(f"Warning: Cannot remove '{tmp_file}': {e}")
+            except (PermissionError, OSError) as e:
+                print(f"Warning: Error searching for temp files in vault: {e}")
+    
+    # Clean pdf_tools/tmp/ in project root
+    pdf_tools_tmp = project_root / "pdf_tools" / "tmp"
+    if pdf_tools_tmp.exists() and pdf_tools_tmp.is_dir():
+        try:
+            for item in pdf_tools_tmp.rglob("*"):
+                if item.is_file():
+                    item.unlink()
+                    files_removed += 1
+                elif item.is_dir():
+                    # Remove empty directories
+                    try:
+                        item.rmdir()
+                    except OSError:
+                        # Directory not empty, skip
+                        pass
+            # Remove tmp directory itself if empty
+            try:
+                pdf_tools_tmp.rmdir()
+            except OSError:
+                # Directory not empty, skip
+                pass
+        except (PermissionError, OSError) as e:
+            print(f"Warning: Error cleaning pdf_tools/tmp/: {e}")
+    
+    # Clean any OCR scratch files (common patterns: *_ocr.*, *.ocr.*, *_scratch.*)
+    if context.current_vault and context.current_vault in context.vaults:
+        vault_path = Path(context.vaults[context.current_vault])
+        if vault_path.exists() and vault_path.is_dir():
+            ocr_patterns = ["*_ocr.*", "*.ocr.*", "*_scratch.*", "*_scratch_*.*"]
+            try:
+                for pattern in ocr_patterns:
+                    for scratch_file in vault_path.rglob(pattern):
+                        if scratch_file.is_file():
+                            # Only remove if it's clearly a temp file (not a note)
+                            # Skip .md files to be safe
+                            if scratch_file.suffix not in [".md", ".txt"]:
+                                try:
+                                    scratch_file.unlink()
+                                    files_removed += 1
+                                except (PermissionError, OSError) as e:
+                                    print(f"Warning: Cannot remove '{scratch_file}': {e}")
+            except (PermissionError, OSError) as e:
+                print(f"Warning: Error searching for OCR scratch files: {e}")
+    
+    # Also check pdf_tools directory for OCR scratch files
+    pdf_tools_dir = project_root / "pdf_tools"
+    if pdf_tools_dir.exists() and pdf_tools_dir.is_dir():
+        ocr_patterns = ["*_ocr.*", "*.ocr.*", "*_scratch.*", "*_scratch_*.*"]
+        try:
+            for pattern in ocr_patterns:
+                for scratch_file in pdf_tools_dir.rglob(pattern):
+                    if scratch_file.is_file():
+                        # Skip if it's in tmp/ (already handled)
+                        if "tmp" not in scratch_file.parts:
+                            # Only remove if it's clearly a temp file
+                            if scratch_file.suffix not in [".md", ".txt", ".py"]:
+                                try:
+                                    scratch_file.unlink()
+                                    files_removed += 1
+                                except (PermissionError, OSError) as e:
+                                    print(f"Warning: Cannot remove '{scratch_file}': {e}")
+        except (PermissionError, OSError) as e:
+            print(f"Warning: Error searching for OCR scratch files in pdf_tools: {e}")
+    
+    # Print summary
+    if files_removed > 0:
+        print(f"Cache cleanup complete: Removed {files_removed} temporary file(s).")
+    else:
+        print("Cache cleanup complete: No temporary files found.")

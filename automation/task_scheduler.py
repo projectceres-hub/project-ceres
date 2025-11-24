@@ -208,6 +208,111 @@ def register_template_sync_job(
         pass
 
 
+def register_srd_index_job(
+    scheduler: Scheduler,
+    context: Any,
+    interval_seconds: int = 12 * 60 * 60
+) -> None:
+    """
+    Register a recurring SRD index rebuild job.
+    
+    Registers a job that rebuilds the SRD index at the specified interval.
+    Default interval is 12 hours (43200 seconds).
+    
+    Args:
+        scheduler: Scheduler instance to register the job with
+        context: Context object (should be Config or have compatible attributes):
+            - current_vault: Name of the current vault
+            - vaults: Dictionary mapping vault names to paths
+        interval_seconds: Time interval between rebuilds in seconds (default: 43200 = 12 hours)
+    """
+    from automation.jobs import rebuild_srd_index_job
+    
+    def srd_index_job() -> None:
+        """Wrapper function for the SRD index rebuild job."""
+        rebuild_srd_index_job(context)
+    
+    try:
+        scheduler.register_job(
+            name="srd-index-rebuild",
+            interval_seconds=float(interval_seconds),
+            callable=srd_index_job
+        )
+    except ValueError:
+        # Job already registered, skip
+        pass
+
+
+def register_session_reminder_job(
+    scheduler: Scheduler,
+    context: Any,
+    interval_seconds: int = 60 * 60
+) -> None:
+    """
+    Register a job that checks for upcoming sessions every hour.
+    
+    Registers a job that checks for upcoming TTRPG sessions and prints
+    reminders if they fall within the configured reminder window.
+    Default interval is 1 hour (3600 seconds).
+    
+    Args:
+        scheduler: Scheduler instance to register the job with
+        context: Context object (should be Config or have compatible attributes):
+            - session_reminder_hours_before: Hours before session to send reminder (default: 24)
+        interval_seconds: Time interval between checks in seconds (default: 3600 = 1 hour)
+    """
+    from automation.jobs import session_reminder_job
+    
+    def reminder_job() -> None:
+        """Wrapper function for the session reminder job."""
+        session_reminder_job(context)
+    
+    try:
+        scheduler.register_job(
+            name="session-reminder",
+            interval_seconds=float(interval_seconds),
+            callable=reminder_job
+        )
+    except ValueError:
+        # Job already registered, skip
+        pass
+
+
+def register_cache_clean_job(
+    scheduler: Scheduler,
+    context: Any,
+    interval_seconds: int = 6 * 60 * 60
+) -> None:
+    """
+    Register a recurring 'cache-clean' job that runs every N seconds.
+    
+    Registers a job that cleans temporary files used by indexing, PDF processing,
+    or GPT scratch output. Default interval is 6 hours (21600 seconds).
+    
+    Args:
+        scheduler: Scheduler instance to register the job with
+        context: Context object (should be Config or have compatible attributes):
+            - current_vault: Name of the current vault
+            - vaults: Dictionary mapping vault names to paths
+        interval_seconds: Time interval between cleanups in seconds (default: 21600 = 6 hours)
+    """
+    from automation.jobs import clean_cache_job
+    
+    def cache_clean_job() -> None:
+        """Wrapper function for the cache clean job."""
+        clean_cache_job(context)
+    
+    try:
+        scheduler.register_job(
+            name="cache-clean",
+            interval_seconds=float(interval_seconds),
+            callable=cache_clean_job
+        )
+    except ValueError:
+        # Job already registered, skip
+        pass
+
+
 def register_default_jobs(scheduler: Scheduler, context: Any) -> None:
     """
     Register default recurring jobs with the scheduler.
@@ -227,6 +332,11 @@ def register_default_jobs(scheduler: Scheduler, context: Any) -> None:
                  - templates_remote_url: Optional URL for template sync (for template-sync job)
                  - templates_local_path: Optional path for template sync
                  - default_vault_name: Name of default vault
+                 - session_reminder_hours_before: Hours before session to send reminder (default: 24)
+                 
+                 The SRD index job will be registered if current_vault is set and
+                 the vault's SRDs/ directory exists.
+                 The session reminder job is always registered.
     """
     # Sync vaults job - runs every 10 minutes
     def sync_vaults_job() -> None:
@@ -267,4 +377,31 @@ def register_default_jobs(scheduler: Scheduler, context: Any) -> None:
         except ValueError:
             # Job already registered, skip
             pass
+    
+    # SRD index rebuild job - runs every 12 hours (only if SRDs directory exists)
+    if hasattr(context, 'current_vault') and context.current_vault:
+        if hasattr(context, 'vaults') and context.current_vault in context.vaults:
+            from pathlib import Path
+            vault_path = Path(context.vaults[context.current_vault])
+            srd_dir = vault_path / "SRDs"
+            if srd_dir.exists() and srd_dir.is_dir():
+                try:
+                    register_srd_index_job(scheduler, context, interval_seconds=12 * 60 * 60)  # 12 hours
+                except ValueError:
+                    # Job already registered, skip
+                    pass
+    
+    # Session reminder job - runs every hour (checks for upcoming sessions)
+    try:
+        register_session_reminder_job(scheduler, context, interval_seconds=60 * 60)  # 1 hour
+    except ValueError:
+        # Job already registered, skip
+        pass
+    
+    # Cache clean job - runs every 6 hours
+    try:
+        register_cache_clean_job(scheduler, context, interval_seconds=6 * 60 * 60)  # 6 hours
+    except ValueError:
+        # Job already registered, skip
+        pass
 

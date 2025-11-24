@@ -254,20 +254,63 @@ def cmd_createnote(
     current_vault: Optional[str],
     prompt_input: Callable[[str], str],
     default_vault_name: str = "GMAssistantVault",
-    history_manager = None
+    history_manager = None,
+    config = None
 ) -> None:
     """
     Create a new markdown note, optionally from a template.
     
+    Supports flags:
+    - --template <name>: Use specified template
+    - --dry-run: Preview without writing to disk
+    - Variable replacement: var=value var2=value2 ...
+    
     Args:
-        args: Command arguments (unused)
+        args: Command arguments (flags and variables)
         vaults: Dictionary mapping vault names to paths
         current_vault: Name of the current active vault
         prompt_input: Function to get user input
         default_vault_name: Name of the default vault (for template location)
+        history_manager: History manager instance (optional)
+        config: Config object (optional, for variable replacement)
     """
-    choice = prompt_input("Create from (T)emplate or (B)lank? ").strip().lower()
+    import shlex
+    from core.templates import apply_template_preview
+    
+    # Parse arguments
+    dry_run = False
+    template_name = None
+    variables: Dict[str, str] = {}
+    
+    if args.strip():
+        # Parse flags and variables
+        parts = shlex.split(args.strip())
+        i = 0
+        while i < len(parts):
+            if parts[i] == "--template" and i + 1 < len(parts):
+                template_name = parts[i + 1]
+                i += 2
+            elif parts[i] == "--dry-run":
+                dry_run = True
+                i += 1
+            elif "=" in parts[i]:
+                # Variable assignment: var=value
+                var_parts = parts[i].split("=", 1)
+                if len(var_parts) == 2:
+                    variables[var_parts[0].strip()] = var_parts[1].strip()
+                i += 1
+            else:
+                i += 1
+    
+    choice = ""
     content = ""
+    
+    # If template specified via flag, use it; otherwise prompt
+    if template_name:
+        choice = "t"
+    else:
+        choice = prompt_input("Create from (T)emplate or (B)lank? ").strip().lower()
+    
     if choice == "t":
         template_dir = os.path.join(vaults[default_vault_name], "templates")
         try:
@@ -277,18 +320,43 @@ def cmd_createnote(
             if not templates:
                 print("No templates found. Creating blank note instead.")
             else:
-                print("Available templates:")
-                for i, t in enumerate(templates, 1):
-                    print(f"{i}. {t}")
-                pick = prompt_input("Select template number or name: ").strip()
-                if pick.isdigit() and 1 <= int(pick) <= len(templates):
-                    template_file = templates[int(pick) - 1]
+                # If template specified via flag, use it; otherwise prompt
+                if template_name:
+                    # Remove .md extension if present for matching
+                    template_name_clean = template_name if not template_name.endswith(".md") else template_name[:-3]
+                    # Try to find matching template
+                    template_file = None
+                    for t in templates:
+                        if t == template_name or t == template_name + ".md":
+                            template_file = t
+                            break
+                        if t[:-3] == template_name_clean:  # Match without extension
+                            template_file = t
+                            break
+                    if not template_file:
+                        print(f"Template '{template_name}' not found. Available templates:")
+                        for i, t in enumerate(templates, 1):
+                            print(f"  {i}. {t}")
+                        return
                 else:
-                    template_file = pick if pick in templates else None
+                    print("Available templates:")
+                    for i, t in enumerate(templates, 1):
+                        print(f"  {i}. {t}")
+                    pick = prompt_input("Select template number or name: ").strip()
+                    if pick.isdigit() and 1 <= int(pick) <= len(templates):
+                        template_file = templates[int(pick) - 1]
+                    else:
+                        template_file = pick if pick in templates else None
+                
                 if template_file:
                     try:
-                        with open(os.path.join(template_dir, template_file), "r", encoding="utf-8") as f:
-                            content = f.read()
+                        # Use apply_template_preview for variable replacement
+                        if config:
+                            content = apply_template_preview(template_file, config, variables)
+                        else:
+                            # Fallback: read template without replacement
+                            with open(os.path.join(template_dir, template_file), "r", encoding="utf-8") as f:
+                                content = f.read()
                     except (FileNotFoundError, PermissionError, OSError) as e:
                         print(f"Error: Failed to read template '{template_file}': {e}")
                         print("Hint: Check that the template file exists and is readable.")
@@ -309,7 +377,13 @@ def cmd_createnote(
     if not name.endswith(".md"):
         name += ".md"
     full_path = Path(vaults[current_vault]) / name
-    print(f"\n--- Preview: {name} ---\n{content}\n-------------------") 
+    print(f"\n--- Preview: {name} ---\n{content}\n-------------------")
+    
+    # If dry-run, just print and exit
+    if dry_run:
+        print("(Dry-run: Note not written to disk)")
+        return
+    
     if prompt_input("Create this note? (Y/N): ").strip().lower() == "y":
         try:
             # Backup if file already exists (overwrite case)

@@ -37,6 +37,7 @@ class Config:
     env_file: str = "variables.env"
     templates_remote_url: Optional[str] = None
     templates_local_path: Optional[Path] = None
+    session_reminder_hours_before: int = 24
     
     def __post_init__(self) -> None:
         """Initialize after dataclass creation."""
@@ -70,6 +71,8 @@ class Config:
                             self.templates_local_path = Path(path_str)
                         else:
                             self.templates_local_path = None
+                    if "session_reminder_hours_before" in data:
+                        self.session_reminder_hours_before = data.get("session_reminder_hours_before", 24)
             except json.JSONDecodeError as e:
                 print(f"Error: Failed to parse settings.json: {e}")
                 print("Hint: The settings.json file may be corrupted. Check its format.")
@@ -116,7 +119,8 @@ class Config:
                     "ignored_vaults": self.ignored_vaults,
                     "default_model": self.default_model,
                     "templates_remote_url": self.templates_remote_url,
-                    "templates_local_path": str(self.templates_local_path) if self.templates_local_path else None
+                    "templates_local_path": str(self.templates_local_path) if self.templates_local_path else None,
+                    "session_reminder_hours_before": self.session_reminder_hours_before
                 }, f)
         except PermissionError as e:
             print(f"Error: Permission denied writing to settings.json: {e}")

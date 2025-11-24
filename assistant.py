@@ -433,6 +433,41 @@ def cmd_help(args: str, config: Config) -> None:
     for cmd, (_, help_text) in config.commands.items():
         print(f" {cmd}: {help_text}")
 
+def _resolve_note_path(
+    note_name: str,
+    vaults: Dict[str, str],
+    current_vault: Optional[str]
+) -> Optional[Path]:
+    """
+    Resolve a note name to a full path.
+    
+    Helper function to convert a note name (e.g., "MyNote.md" or "MyNote")
+    to a full Path object within the current vault.
+    
+    Args:
+        note_name: Note name (with or without .md extension)
+        vaults: Dictionary mapping vault names to paths
+        current_vault: Name of the current active vault
+        
+    Returns:
+        Path object if note exists, None otherwise
+    """
+    if not current_vault or current_vault not in vaults:
+        print("Error: No current vault selected.")
+        return None
+    
+    # Resolve note path
+    if not note_name.endswith(".md"):
+        note_name += ".md"
+    note_path = Path(vaults[current_vault]) / note_name
+    
+    if not note_path.exists():
+        print(f"Error: Note '{note_name}' not found in current vault.")
+        return None
+    
+    return note_path
+
+
 def cmd_undo(
     args: str,
     history_manager: HistoryManager,
@@ -441,6 +476,8 @@ def cmd_undo(
 ) -> None:
     """
     Undo the last operation on a note.
+    
+    Convenience wrapper that restores the most recent version.
     
     Args:
         args: Optional note path. If provided, undo last operation for that note.
@@ -453,18 +490,8 @@ def cmd_undo(
     
     if args.strip():
         # User specified a note path
-        note_name = args.strip()
-        if not current_vault or current_vault not in vaults:
-            print("Error: No current vault selected.")
-            return
-        
-        # Resolve note path
-        if not note_name.endswith(".md"):
-            note_name += ".md"
-        note_path = Path(vaults[current_vault]) / note_name
-        
-        if not note_path.exists():
-            print(f"Error: Note '{note_name}' not found in current vault.")
+        note_path = _resolve_note_path(args.strip(), vaults, current_vault)
+        if note_path is None:
             return
     else:
         # No path specified - undo most recent operation
@@ -477,6 +504,156 @@ def cmd_undo(
             print("No operations to undo.")
         else:
             print(f"No history found for note: {note_path}")
+
+
+def cmd_history_list(
+    args: str,
+    history_manager: HistoryManager,
+    vaults: Dict[str, str],
+    current_vault: Optional[str]
+) -> None:
+    """
+    List history entries for a note.
+    
+    Shows the last N backups for that note with numbered entries.
+    
+    Usage: history-list <note> [limit]
+    
+    Args:
+        args: Note name and optional limit (space-separated)
+        history_manager: History manager instance
+        vaults: Dictionary mapping vault names to paths
+        current_vault: Name of the current active vault
+    """
+    if not args.strip():
+        print("Usage: history-list <note> [limit]")
+        print("Example: history-list MyNote")
+        print("Example: history-list MyNote 5")
+        return
+    
+    parts = args.strip().split(None, 1)
+    note_name = parts[0]
+    limit = 10
+    
+    if len(parts) > 1:
+        try:
+            limit = int(parts[1])
+            if limit < 1:
+                print("Error: Limit must be a positive integer.")
+                return
+        except ValueError:
+            print("Error: Limit must be a valid integer.")
+            return
+    
+    # Resolve note path
+    note_path = _resolve_note_path(note_name, vaults, current_vault)
+    if note_path is None:
+        return
+    
+    # Get history entries
+    entries = history_manager.list_history(note_path, limit=limit)
+    
+    if not entries:
+        print(f"No history found for note: {note_name}")
+        return
+    
+    print(f"\nHistory for '{note_name}' (showing {len(entries)} of {len(entries)} entries):\n")
+    print("=" * 80)
+    
+    for i, entry in enumerate(entries, 1):
+        timestamp = entry.timestamp_obj.strftime("%Y-%m-%d %H:%M:%S")
+        print(f"{i}. {timestamp}")
+        print(f"   Backup: {entry.backup_path}")
+        if i < len(entries):
+            print("-" * 80)
+    
+    print("=" * 80)
+    print(f"\nUse 'history-restore {note_name} <index>' to restore a specific version.")
+
+
+def cmd_history_restore(
+    args: str,
+    history_manager: HistoryManager,
+    vaults: Dict[str, str],
+    current_vault: Optional[str]
+) -> None:
+    """
+    Restore a specific version of a note by index.
+    
+    Restores the note from the backup at the given index (as shown in history-list).
+    
+    Usage: history-restore <note> <index>
+    
+    Args:
+        args: Note name and index (space-separated)
+        history_manager: History manager instance
+        vaults: Dictionary mapping vault names to paths
+        current_vault: Name of the current active vault
+    """
+    if not args.strip():
+        print("Usage: history-restore <note> <index>")
+        print("Example: history-restore MyNote 1")
+        print("Use 'history-list <note>' to see available versions.")
+        return
+    
+    parts = args.strip().split()
+    if len(parts) < 2:
+        print("Usage: history-restore <note> <index>")
+        print("Example: history-restore MyNote 1")
+        print("Use 'history-list <note>' to see available versions.")
+        return
+    
+    note_name = parts[0]
+    try:
+        index = int(parts[1])
+        if index < 1:
+            print("Error: Index must be a positive integer (1, 2, 3, ...).")
+            return
+    except ValueError:
+        print("Error: Index must be a valid integer (1, 2, 3, ...).")
+        return
+    
+    # Resolve note path
+    note_path = _resolve_note_path(note_name, vaults, current_vault)
+    if note_path is None:
+        return
+    
+    # Get history entries
+    entries = history_manager.list_history(note_path, limit=index)
+    
+    if not entries:
+        print(f"No history found for note: {note_name}")
+        return
+    
+    if index > len(entries):
+        print(f"Error: Index {index} is out of range. Only {len(entries)} history entries available.")
+        print(f"Use 'history-list {note_name}' to see available versions.")
+        return
+    
+    # Get the entry at the specified index (1-based, so subtract 1)
+    entry = entries[index - 1]
+    
+    # Restore the version
+    try:
+        # Create a backup of the current version before restoring
+        history_manager.backup_note(note_path)
+        
+        success = history_manager.restore_version(entry)
+        if success:
+            timestamp = entry.timestamp_obj.strftime("%Y-%m-%d %H:%M:%S")
+            print(f"Restored version from {timestamp}")
+            print(f"Note '{note_name}' has been restored to this version.")
+            print(f"A backup of the previous version was created before restore.")
+        else:
+            print("Failed to restore version.")
+    except FileNotFoundError as e:
+        print(f"Error: {e}")
+        print("Hint: The backup file may have been deleted manually.")
+    except RuntimeError as e:
+        print(f"Error: {e}")
+        print("Hint: Check that you have write permissions for the note file.")
+    except Exception as e:
+        print(f"Error: Unexpected error during restore: {e}")
 
 def cmd_tag_add(
     args: str,
@@ -1440,6 +1617,373 @@ def cmd_template_sync_now(args: str, config: Config) -> None:
         print(f"Error: Unexpected error during template sync: {e}")
 
 
+def cmd_srd_index_run_now(args: str, config: Config) -> None:
+    """
+    Run the SRD index rebuild job immediately.
+    
+    Executes the rebuild_srd_index_job function synchronously without waiting for
+    the scheduled interval.
+    
+    Args:
+        args: Command arguments (unused)
+        config: Config object containing vault information
+    """
+    from automation.jobs import rebuild_srd_index_job
+    
+    try:
+        print("Running SRD index rebuild...")
+        rebuild_srd_index_job(config)
+        print("SRD index rebuild completed.")
+    except ValueError as e:
+        print(f"Error: Cannot rebuild SRD index: {e}")
+    except PermissionError as e:
+        print(f"Error: Permission denied during SRD index rebuild: {e}")
+        print("Hint: Check that you have read permissions for the SRDs directory and write permissions for the index directory.")
+    except OSError as e:
+        print(f"Error: Failed to rebuild SRD index: {e}")
+        print("Hint: Check that the vault directory exists and the index directory is writable.")
+    except Exception as e:
+        print(f"Error: Unexpected error during SRD index rebuild: {e}")
+
+
+def cmd_cache_clean_now(args: str, config: Config) -> None:
+    """
+    Run the cache clean job immediately.
+    
+    Executes the clean_cache_job function synchronously without waiting for
+    the scheduled interval.
+    
+    Args:
+        args: Command arguments (unused)
+        config: Config object containing vault information
+    """
+    from automation.jobs import clean_cache_job
+    
+    try:
+        print("Running cache cleanup...")
+        clean_cache_job(config)
+        print("Cache cleanup completed.")
+    except ValueError as e:
+        print(f"Error: Cannot clean cache: {e}")
+    except PermissionError as e:
+        print(f"Error: Permission denied during cache cleanup: {e}")
+    except OSError as e:
+        print(f"Error: Failed to clean cache: {e}")
+    except Exception as e:
+        print(f"Error: Unexpected error during cache cleanup: {e}")
+
+
+def cmd_campaign_create(args: str, config: Config) -> None:
+    """
+    Create a new campaign.
+    
+    Usage: campaign-create <name>
+    
+    Args:
+        args: Campaign name
+        config: Config object containing vault information
+    """
+    from core.campaigns import create_campaign
+    
+    if not args.strip():
+        print("Usage: campaign-create <name>")
+        print("Example: campaign-create \"The Lost Mines\"")
+        return
+    
+    try:
+        campaign = create_campaign(args.strip(), config)
+        print(f"Campaign '{campaign.name}' created successfully!")
+    except ValueError as e:
+        print(f"Error: {e}")
+    except PermissionError as e:
+        print(f"Error: Permission denied: {e}")
+        print("Hint: Check that you have write permissions for the vault directory.")
+    except OSError as e:
+        print(f"Error: Failed to create campaign: {e}")
+        print("Hint: Check that the vault directory exists and is writable.")
+    except Exception as e:
+        print(f"Error: Unexpected error: {e}")
+
+
+def cmd_campaign_add_pc(args: str, config: Config) -> None:
+    """
+    Add a party member (PC) to a campaign.
+    
+    Usage: campaign-add-pc <campaign> <name>
+    
+    Args:
+        args: Campaign name and character name (space-separated)
+        config: Config object containing vault information
+    """
+    from core.campaigns import find_campaign, create_party_member
+    
+    parts = args.strip().split(None, 1)
+    if len(parts) < 2:
+        print("Usage: campaign-add-pc <campaign> <name>")
+        print("Example: campaign-add-pc \"The Lost Mines\" \"Aragorn\"")
+        return
+    
+    campaign_name = parts[0]
+    character_name = parts[1]
+    
+    try:
+        campaign = find_campaign(campaign_name, config)
+        if not campaign:
+            print(f"Error: Campaign '{campaign_name}' not found")
+            return
+        
+        create_party_member(campaign, character_name, config)
+        print(f"Party member '{character_name}' added to campaign '{campaign_name}'")
+    except ValueError as e:
+        print(f"Error: {e}")
+    except PermissionError as e:
+        print(f"Error: Permission denied: {e}")
+        print("Hint: Check that you have write permissions for the campaign directory.")
+    except OSError as e:
+        print(f"Error: Failed to add party member: {e}")
+        print("Hint: Check that the campaign directory exists and is writable.")
+    except Exception as e:
+        print(f"Error: Unexpected error: {e}")
+
+
+def cmd_campaign_add_npc(args: str, config: Config) -> None:
+    """
+    Add an NPC to a campaign.
+    
+    Usage: campaign-add-npc <campaign> <attitude> <name>
+    
+    Attitudes: ally, friendly, neutral, adversarial, antagonist
+    
+    Args:
+        args: Campaign name, attitude, and character name (space-separated)
+        config: Config object containing vault information
+    """
+    from core.campaigns import find_campaign, create_npc
+    
+    parts = args.strip().split(None, 2)
+    if len(parts) < 3:
+        print("Usage: campaign-add-npc <campaign> <attitude> <name>")
+        print("Example: campaign-add-npc \"The Lost Mines\" friendly \"Innkeeper Bob\"")
+        print("Valid attitudes: ally, friendly, neutral, adversarial, antagonist")
+        return
+    
+    campaign_name = parts[0]
+    attitude = parts[1]
+    character_name = parts[2]
+    
+    try:
+        campaign = find_campaign(campaign_name, config)
+        if not campaign:
+            print(f"Error: Campaign '{campaign_name}' not found")
+            return
+        
+        create_npc(campaign, character_name, attitude, config)
+        print(f"NPC '{character_name}' added to campaign '{campaign_name}' as {attitude}")
+    except ValueError as e:
+        print(f"Error: {e}")
+    except PermissionError as e:
+        print(f"Error: Permission denied: {e}")
+        print("Hint: Check that you have write permissions for the campaign directory.")
+    except OSError as e:
+        print(f"Error: Failed to add NPC: {e}")
+        print("Hint: Check that the campaign directory exists and is writable.")
+    except Exception as e:
+        print(f"Error: Unexpected error: {e}")
+
+
+def cmd_campaign_add_location(args: str, config: Config) -> None:
+    """
+    Add a location to a campaign.
+    
+    Usage: campaign-add-location <campaign> <name>
+    
+    Args:
+        args: Campaign name and location name (space-separated)
+        config: Config object containing vault information
+    """
+    from core.campaigns import find_campaign, create_location
+    
+    parts = args.strip().split(None, 1)
+    if len(parts) < 2:
+        print("Usage: campaign-add-location <campaign> <name>")
+        print("Example: campaign-add-location \"The Lost Mines\" \"Phandalin\"")
+        return
+    
+    campaign_name = parts[0]
+    location_name = parts[1]
+    
+    try:
+        campaign = find_campaign(campaign_name, config)
+        if not campaign:
+            print(f"Error: Campaign '{campaign_name}' not found")
+            return
+        
+        create_location(campaign, location_name, config)
+        print(f"Location '{location_name}' added to campaign '{campaign_name}'")
+    except ValueError as e:
+        print(f"Error: {e}")
+    except PermissionError as e:
+        print(f"Error: Permission denied: {e}")
+        print("Hint: Check that you have write permissions for the campaign directory.")
+    except OSError as e:
+        print(f"Error: Failed to add location: {e}")
+        print("Hint: Check that the campaign directory exists and is writable.")
+    except Exception as e:
+        print(f"Error: Unexpected error: {e}")
+
+
+def cmd_session_create(args: str, config: Config) -> None:
+    """
+    Create a new session note for a campaign.
+    
+    Usage: session-create <campaign> "<session title>"
+    
+    Creates a new session note in the campaign's Sessions/ directory with
+    automatic numbering, proper frontmatter, and linking to campaign and
+    previous session.
+    
+    Args:
+        args: Campaign name and session title (space-separated, title in quotes recommended)
+        config: Config object containing vault information
+    """
+    from core.campaigns import find_campaign, create_session
+    
+    if not args.strip():
+        print("Usage: session-create <campaign> \"<session title>\"")
+        print("Example: session-create \"The Lost Mines\" \"The Goblin Ambush\"")
+        return
+    
+    # Split on first space only to get campaign name and title
+    parts = args.strip().split(None, 1)
+    if len(parts) < 2:
+        print("Usage: session-create <campaign> \"<session title>\"")
+        print("Example: session-create \"The Lost Mines\" \"The Goblin Ambush\"")
+        print("Note: Use quotes around the session title if it contains spaces.")
+        return
+    
+    campaign_name = parts[0]
+    session_title = parts[1]
+    
+    # Remove quotes if present (handles both "title" and 'title')
+    if (session_title.startswith('"') and session_title.endswith('"')) or \
+       (session_title.startswith("'") and session_title.endswith("'")):
+        session_title = session_title[1:-1]
+    
+    try:
+        campaign = find_campaign(campaign_name, config)
+        if not campaign:
+            print(f"Error: Campaign '{campaign_name}' not found")
+            return
+        
+        session_file = create_session(campaign, session_title, config)
+        print(f"Session note created: {session_file.name}")
+    except ValueError as e:
+        print(f"Error: {e}")
+    except PermissionError as e:
+        print(f"Error: Permission denied: {e}")
+        print("Hint: Check that you have write permissions for the campaign's Sessions directory.")
+    except OSError as e:
+        print(f"Error: Failed to create session: {e}")
+        print("Hint: Check that the campaign directory exists and is writable.")
+    except Exception as e:
+        print(f"Error: Unexpected error: {e}")
+
+
+def cmd_template_preview(args: str, config: Config) -> None:
+    """
+    Preview a template with variable replacement without writing to disk.
+    
+    Usage: template-preview <template> [var=value var2=value2 ...]
+    
+    Examples:
+    - template-preview MyTemplate
+    - template-preview MyTemplate title="My Note" campaign="Lost Mines"
+    - template-preview MyTemplate title="NPC Name" npc_attitude="friendly"
+    
+    Args:
+        args: Template name and optional variable assignments (space-separated)
+        config: Config object containing vault information
+    """
+    from core.templates import apply_template_preview
+    import shlex
+    
+    if not args.strip():
+        print("Usage: template-preview <template> [var=value var2=value2 ...]")
+        print("Example: template-preview MyTemplate title=\"My Note\" campaign=\"Lost Mines\"")
+        return
+    
+    # Parse arguments
+    parts = shlex.split(args.strip())
+    if not parts:
+        print("Usage: template-preview <template> [var=value var2=value2 ...]")
+        return
+    
+    template_name = parts[0]
+    variables: Dict[str, str] = {}
+    
+    # Parse variable assignments: var=value
+    for part in parts[1:]:
+        if "=" in part:
+            var_parts = part.split("=", 1)
+            if len(var_parts) == 2:
+                var_name = var_parts[0].strip()
+                var_value = var_parts[1].strip()
+                # Remove quotes if present
+                if (var_value.startswith('"') and var_value.endswith('"')) or \
+                   (var_value.startswith("'") and var_value.endswith("'")):
+                    var_value = var_value[1:-1]
+                variables[var_name] = var_value
+            else:
+                print(f"Warning: Invalid variable assignment '{part}'. Expected format: var=value")
+        else:
+            print(f"Warning: Ignoring argument '{part}'. Expected format: var=value")
+    
+    try:
+        rendered = apply_template_preview(template_name, config, variables)
+        print(f"\n--- Preview: {template_name} ---\n{rendered}\n{'-' * 50}")
+        if variables:
+            print(f"\nVariables used: {', '.join(f'{k}={v}' for k, v in variables.items())}")
+    except FileNotFoundError as e:
+        print(f"Error: {e}")
+        print("Hint: Check that the template name is correct and the template exists.")
+    except PermissionError as e:
+        print(f"Error: Permission denied: {e}")
+        print("Hint: Check that you have read permissions for the template directory.")
+    except OSError as e:
+        print(f"Error: Failed to read template: {e}")
+        print("Hint: Check that the template file exists and is accessible.")
+    except Exception as e:
+        print(f"Error: Unexpected error: {e}")
+
+
+def cmd_session_reminder_run_now(args: str, config: Config) -> None:
+    """
+    Run the session reminder job immediately.
+    
+    Executes the session_reminder_job function synchronously without waiting for
+    the scheduled interval.
+    
+    Args:
+        args: Command arguments (unused)
+        config: Config object containing session reminder configuration
+    """
+    from automation.jobs import session_reminder_job
+    
+    try:
+        print("Checking for upcoming sessions...")
+        session_reminder_job(config)
+    except ValueError as e:
+        print(f"Error: Cannot check session reminders: {e}")
+    except PermissionError as e:
+        print(f"Error: Permission denied reading session files: {e}")
+        print("Hint: Check that you have read permissions for the exports directory.")
+    except OSError as e:
+        print(f"Error: Failed to check session reminders: {e}")
+        print("Hint: Check that the exports directory exists and is accessible.")
+    except Exception as e:
+        print(f"Error: Unexpected error during session reminder check: {e}")
+
+
 def cmd_debug(args: str, config: Config, gpt_client) -> None:
     """
     Print diagnostic information about the system.
@@ -1616,8 +2160,8 @@ def register_all_commands(
     register_command(
         config,
         "createnote",
-        lambda args: cmd_createnote(args, config.vaults, config.current_vault, prompt_input, config.default_vault_name, history_manager),
-        "Create a new note, optionally from a template."
+        lambda args: cmd_createnote(args, config.vaults, config.current_vault, prompt_input, config.default_vault_name, history_manager, config),
+        "Create a new note, optionally from a template. Usage: createnote [--template X] [--dry-run] [var=value ...]"
     )
     register_command(
         config,
@@ -1636,6 +2180,12 @@ def register_all_commands(
         "showtemplates",
         lambda args: cmd_showtemplates(args, config.vaults, prompt_input, config.default_vault_name),
         "List and preview note templates."
+    )
+    register_command(
+        config,
+        "template-preview",
+        lambda args: cmd_template_preview(args, config),
+        "Preview a template with variable replacement. Usage: template-preview <template> [var=value ...]"
     )
     register_command(
         config,
@@ -1813,6 +2363,54 @@ def register_all_commands(
     )
     register_command(
         config,
+        "srd-index-run-now",
+        lambda args: cmd_srd_index_run_now(args, config),
+        "Run the SRD index rebuild job immediately."
+    )
+    register_command(
+        config,
+        "cache-clean-now",
+        lambda args: cmd_cache_clean_now(args, config),
+        "Run the cache clean job immediately."
+    )
+    register_command(
+        config,
+        "session-reminder-run-now",
+        lambda args: cmd_session_reminder_run_now(args, config),
+        "Run the session reminder job immediately."
+    )
+    register_command(
+        config,
+        "campaign-create",
+        lambda args: cmd_campaign_create(args, config),
+        "Create a new campaign. Usage: campaign-create <name>"
+    )
+    register_command(
+        config,
+        "campaign-add-pc",
+        lambda args: cmd_campaign_add_pc(args, config),
+        "Add a party member (PC) to a campaign. Usage: campaign-add-pc <campaign> <name>"
+    )
+    register_command(
+        config,
+        "campaign-add-npc",
+        lambda args: cmd_campaign_add_npc(args, config),
+        "Add an NPC to a campaign. Usage: campaign-add-npc <campaign> <attitude> <name>"
+    )
+    register_command(
+        config,
+        "campaign-add-location",
+        lambda args: cmd_campaign_add_location(args, config),
+        "Add a location to a campaign. Usage: campaign-add-location <campaign> <name>"
+    )
+    register_command(
+        config,
+        "session-create",
+        lambda args: cmd_session_create(args, config),
+        "Create a new session note for a campaign. Usage: session-create <campaign> \"<session title>\""
+    )
+    register_command(
+        config,
         "debug",
         lambda args: cmd_debug(args, config, gpt_client),
         "Print diagnostic information about the system."
@@ -1822,6 +2420,18 @@ def register_all_commands(
         "undo",
         lambda args: cmd_undo(args, history_manager, config.vaults, config.current_vault),
         "Undo the last operation on a note. Usage: undo [note_path]"
+    )
+    register_command(
+        config,
+        "history-list",
+        lambda args: cmd_history_list(args, history_manager, config.vaults, config.current_vault),
+        "List history entries for a note. Usage: history-list <note> [limit]"
+    )
+    register_command(
+        config,
+        "history-restore",
+        lambda args: cmd_history_restore(args, history_manager, config.vaults, config.current_vault),
+        "Restore a specific version of a note. Usage: history-restore <note> <index>"
     )
     register_command(
         config,

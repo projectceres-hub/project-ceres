@@ -5,9 +5,10 @@ Provides functions for managing markdown note templates.
 """
 
 import os
+import re
 import shutil
 from pathlib import Path
-from typing import Callable, Dict, List, TYPE_CHECKING
+from typing import Callable, Dict, List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from core.config import Config
@@ -385,6 +386,78 @@ def cmd_deletetemplate(
             print(f"Error: Unexpected error deleting template: {e}")
     else:
         print("Canceled. Template not deleted.")
+
+
+def apply_template_preview(
+    template_name: str,
+    context: "Config",
+    variables: Optional[Dict[str, str]] = None
+) -> str:
+    """
+    Return the rendered content of a template WITHOUT writing it to disk.
+    
+    Supports simple {{var}} replacement with the following variables:
+    - {{title}}: Replaced with variables.get('title', '')
+    - {{campaign}}: Replaced with variables.get('campaign', '')
+    - {{npc_attitude}}: Replaced with variables.get('npc_attitude', '')
+    - Any user-provided variables from the variables dictionary
+    
+    Args:
+        template_name: Name of the template file (with or without .md extension)
+        context: Config object containing vault information
+        variables: Optional dictionary of variable name-value pairs for replacement
+        
+    Returns:
+        Rendered template content with variables replaced
+        
+    Raises:
+        FileNotFoundError: If template file not found
+        PermissionError: If template file cannot be read
+        OSError: If file operations fail
+    """
+    if variables is None:
+        variables = {}
+    
+    # Determine template directory
+    if hasattr(context, 'default_vault_name') and context.default_vault_name in context.vaults:
+        default_vault_name = context.default_vault_name
+    else:
+        # Fallback to first vault if default_vault_name not available
+        default_vault_name = list(context.vaults.keys())[0] if context.vaults else "GMAssistantVault"
+    
+    template_dir = os.path.join(context.vaults[default_vault_name], "templates")
+    
+    # Ensure template name has .md extension
+    if not template_name.endswith(".md"):
+        template_name += ".md"
+    
+    template_path = os.path.join(template_dir, template_name)
+    
+    # Read template content
+    try:
+        with open(template_path, "r", encoding="utf-8") as f:
+            content = f.read()
+    except FileNotFoundError:
+        raise FileNotFoundError(f"Template '{template_name}' not found in '{template_dir}'")
+    except PermissionError as e:
+        raise PermissionError(f"Permission denied reading template '{template_name}': {e}")
+    except OSError as e:
+        raise OSError(f"Failed to read template '{template_name}': {e}")
+    
+    # Perform variable replacement
+    # Pattern: {{var_name}} (allows spaces in variable names, but we'll trim them)
+    pattern = re.compile(r'\{\{(\s*)([^}]+?)(\s*)\}\}')
+    
+    def replace_var(match: re.Match) -> str:
+        """Replace a single {{var}} match with its value."""
+        var_name = match.group(2).strip()  # Get variable name, strip whitespace
+        # Return value or keep placeholder as {{var_name}}
+        return variables.get(var_name, "{{" + var_name + "}}")
+    
+    # Replace all {{var}} patterns
+    rendered_content = pattern.sub(replace_var, content)
+    
+    return rendered_content
 
 
 def sync_templates_from_remote(config: "Config") -> None:
