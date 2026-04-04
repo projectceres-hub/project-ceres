@@ -9,6 +9,22 @@ variables.env
 settings.json
 vaults.json
 
+# API keys / secrets — never commit these
+*.txt
+gm assistant chat gpt api key.txt
+
+# Generated exports (runtime output)
+exports/
+
+# Large data files
+db.xml
+
+# Misc dev artifacts
+coding library
+git-save.ps1
+SCRATCHPAD.md
+SANITY_CHECK_REPORT.md
+
 # OS files
 .DS_Store
 Thumbs.db
