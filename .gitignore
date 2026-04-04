@@ -19,6 +19,11 @@ exports/
 # Large data files
 db.xml
 
+# Generated SRD conversion output
+tools/converted/*.png
+tools/converted/*.html
+tools/converted/*.txt
+
 # Misc dev artifacts
 coding library
 git-save.ps1
