@@ -29,6 +29,7 @@ coding library
 git-save.ps1
 SCRATCHPAD.md
 SANITY_CHECK_REPORT.md
+SCRATCH*.md
 
 # OS files
 .DS_Store
@@ -39,3 +40,7 @@ Thumbs.db
 
 # Obsidian workspace files
 .obsidian/
+
+# Cursor Generated Files
+.cursorrules
+
