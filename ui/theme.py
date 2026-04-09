@@ -257,6 +257,9 @@ QTabWidget::pane {{
     border: 1px solid {BORDER};
     background: {PANEL};
 }}
+QTabBar {{
+    icon-size: 20px;
+}}
 QTabBar::tab {{
     background: {BG};
     color: {MUTED};

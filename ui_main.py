@@ -29,6 +29,32 @@ from __future__ import annotations
 
 import sys
 import os
+from datetime import datetime
+from pathlib import Path
+
+# ── Redirect all stdout/stderr to logs/ui.log ────────────────────────────────
+# Creates a fresh log on every launch so the terminal stays clean.
+# Chromium console noise, Qt warnings, pygame banners — everything lands here.
+
+_LOG_DIR = Path(__file__).resolve().parent / "logs"
+_LOG_DIR.mkdir(exist_ok=True)
+_LOG_FILE = _LOG_DIR / "ui.log"
+
+_log_handle = open(_LOG_FILE, "w", encoding="utf-8", buffering=1)  # line-buffered
+_log_handle.write(f"── GM Assistant — launched {datetime.now():%Y-%m-%d %H:%M:%S} ──\n\n")
+
+# Save a copy of the real stderr fd BEFORE dup2 overwrites it, so we can
+# still print the one-liner "started" message to the actual terminal.
+_terminal_fd = os.dup(2)
+_original_stderr = os.fdopen(_terminal_fd, "w", encoding="utf-8", closefd=True)
+
+sys.stdout = _log_handle
+sys.stderr = _log_handle
+
+# Redirect OS-level file descriptors so native C++ code (Chromium)
+# writes to the log file instead of the real terminal.
+os.dup2(_log_handle.fileno(), 1)  # fd 1 = stdout
+os.dup2(_log_handle.fileno(), 2)  # fd 2 = stderr
 
 # ── Ensure project root is importable ─────────────────────────────────────────
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -44,13 +70,12 @@ def _require_qt() -> str:
             return binding
         except ImportError:
             continue
-    print(
+    _original_stderr.write(
         "\n[GM Assistant] Could not find PyQt5 or PySide6.\n"
         "Install one with:\n"
         "    pip install PyQt5\n"
         "  or\n"
-        "    pip install PySide6\n",
-        file=sys.stderr,
+        "    pip install PySide6\n"
     )
     sys.exit(1)
 
@@ -80,14 +105,14 @@ from ui.theme import FONT_SIZE
 
 def _make_app() -> QApplication:
     """Create and configure the QApplication."""
-    app = QApplication.instance() or QApplication(sys.argv)
-
-    # High-DPI support
+    # High-DPI attributes must be set BEFORE QApplication is constructed
     try:
-        app.setAttribute(Qt.ApplicationAttribute.AA_EnableHighDpiScaling, True)  # type: ignore[attr-defined]
-        app.setAttribute(Qt.ApplicationAttribute.AA_UseHighDpiPixmaps, True)     # type: ignore[attr-defined]
+        QApplication.setAttribute(Qt.ApplicationAttribute.AA_EnableHighDpiScaling, True)  # type: ignore[attr-defined]
+        QApplication.setAttribute(Qt.ApplicationAttribute.AA_UseHighDpiPixmaps, True)     # type: ignore[attr-defined]
     except AttributeError:
         pass  # PySide6 / newer Qt handles this automatically
+
+    app = QApplication.instance() or QApplication(sys.argv)
 
     # Global font
     font = QFont("Consolas")
@@ -104,14 +129,13 @@ def _make_app() -> QApplication:
 
 
 def main() -> int:
+    _original_stderr.write(
+        f"GM Assistant started — logs at {_LOG_FILE}\n"
+    )
+
     app = _make_app()
 
     # ── Backend initialisation ─────────────────────────────────────────────────
-    # initialize_application() loads vaults, settings, Obsidian sync, etc.
-    # It sets config.input_provider = prompt_input (CLI version).
-    # We immediately replace it with the Qt dialog version BEFORE commands
-    # are registered, so every lambda in register_all_commands() picks up
-    # the Qt version through the config reference.
     config, gpt_client, scheduler, scheduler_context, history_manager = (
         initialize_application()
     )

@@ -1,8 +1,12 @@
 """
 Audio module for Project Ceres.
 
-Provides functionality for audio transcription and attaching transcripts to notes.
+Provides generic audio transcription utilities and voice command handling.
 This is a scaffold module for future audio transcription features.
+
+**Note:** Session-specific audio functions (transcribe_audio, attach_transcript_to_session)
+have moved to `pantheon.messor.audio_session` as part of the Pantheon architecture.
+This module retains generic utilities like attach_transcript_to_note and handle_spoken_command.
 
 Future implementations may integrate:
 - OpenAI Whisper API for transcription
@@ -11,76 +15,17 @@ Future implementations may integrate:
 - File-based audio processing (MP3, WAV, etc.)
 """
 
-from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional
+from typing import TYPE_CHECKING
 
+# Re-export Transcript and transcribe_audio from Messor for backward compatibility
+from pantheon.messor.audio_session import Transcript, transcribe_audio
 
-@dataclass
-class Transcript:
-    """
-    Represents a transcribed audio recording.
-    
-    Attributes:
-        text: The transcribed text content
-        source: Source of the audio (e.g., "discord", "local-mic", "file")
-        created_at: Timestamp when the transcript was created
-        metadata: Optional dictionary of additional metadata (e.g., speaker names, duration, file path)
-    """
-    text: str
-    source: str
-    created_at: datetime
-    metadata: Optional[Dict[str, str]] = None
-
-
-def transcribe_audio(file: Path) -> Transcript:
-    """
-    Transcribe an audio file to text.
-    
-    This is a placeholder implementation. Future implementations should:
-    - Support common audio formats (MP3, WAV, OGG, M4A, etc.)
-    - Integrate with transcription services (OpenAI Whisper, AssemblyAI, etc.)
-    - Handle long audio files with chunking
-    - Support multiple speakers (speaker diarization)
-    - Extract metadata (duration, sample rate, channels)
-    
-    Args:
-        file: Path to the audio file to transcribe
-        
-    Returns:
-        Transcript object containing the transcribed text and metadata
-        
-    Raises:
-        NotImplementedError: This is a placeholder implementation
-        FileNotFoundError: If the audio file does not exist
-        PermissionError: If the audio file cannot be read
-    """
-    if not file.exists():
-        raise FileNotFoundError(f"Audio file not found: {file}")
-    
-    if not file.is_file():
-        raise ValueError(f"Path is not a file: {file}")
-    
-    # Placeholder implementation
-    # TODO: Integrate real transcription service (e.g., OpenAI Whisper API)
-    # Example future implementation:
-    #   import openai
-    #   with open(file, "rb") as audio_file:
-    #       transcript_response = openai.Audio.transcribe("whisper-1", audio_file)
-    #       text = transcript_response["text"]
-    
-    # Return dummy transcript for now
-    return Transcript(
-        text="(transcription not yet implemented)",
-        source="file",
-        created_at=datetime.now(),
-        metadata={
-            "file_path": str(file),
-            "file_name": file.name,
-            "status": "placeholder"
-        }
-    )
+if TYPE_CHECKING:
+    from core.config import Config
+else:
+    # Avoid circular import at runtime
+    Config = object
 
 
 def attach_transcript_to_note(note_path: Path, transcript: Transcript) -> None:
@@ -157,4 +102,46 @@ def attach_transcript_to_note(note_path: Path, transcript: Transcript) -> None:
     except Exception as e:
         print(f"Error: Unexpected error writing transcript to note: {e}")
         raise RuntimeError(f"Failed to attach transcript: {e}")
+
+
+def handle_spoken_command(transcript: Transcript, config: "Config") -> None:
+    """
+    High-level entry point for voice commands.
+    
+    Parses transcript text as a spoken command and executes it if recognized.
+    This function wires transcript text into the command system without
+    performing any audio recording or external API calls.
+    
+    If the transcript text matches a known command pattern, it will be parsed
+    and executed using the same command handlers as the CLI. If no pattern
+    matches, the function silently ignores it (no error is raised).
+    
+    Args:
+        transcript: Transcript object containing the spoken text
+        config: Config object containing command registry and application state
+        
+    Note:
+        This function does NOT record audio or call external APIs. It only
+        processes already-transcribed text. Audio recording and transcription
+        should be handled by other functions (e.g., transcribe_audio).
+    """
+    if not transcript.text or not transcript.text.strip():
+        return
+    
+    # Import here to avoid circular import
+    from core.voice_commands import parse_spoken_command, execute_parsed_command
+    
+    # Parse the transcript text as a command
+    parsed = parse_spoken_command(transcript.text)
+    
+    if parsed is None:
+        # Not a recognized command, silently ignore
+        return
+    
+    # Execute the parsed command
+    try:
+        execute_parsed_command(parsed, config)
+    except Exception as e:
+        # Log errors but don't raise (voice commands should be non-blocking)
+        print(f"Error executing voice command '{parsed.command_name}': {e}")
 

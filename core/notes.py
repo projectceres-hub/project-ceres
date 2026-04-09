@@ -2,11 +2,17 @@
 Notes module for Project Ceres.
 
 Provides functions for reading, listing, and managing markdown notes in vaults.
+
+Note creation is canonically implemented in ``pantheon.insitor``; this module
+re-exports the public API for backward compatibility and houses the
+interactive CLI wrapper (``cmd_createnote``).
 """
 
 import os
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
+
+from pantheon.insitor import NoteSpec, create_note
 
 
 def cmd_read(
@@ -265,6 +271,8 @@ def cmd_createnote(
     - --dry-run: Preview without writing to disk
     - Variable replacement: var=value var2=value2 ...
     
+    Internally delegates to :func:`pantheon.insitor.create_note`.
+    
     Args:
         args: Command arguments (flags and variables)
         vaults: Dictionary mapping vault names to paths
@@ -275,7 +283,7 @@ def cmd_createnote(
         config: Config object (optional, for variable replacement)
     """
     import shlex
-    from core.templates import apply_template_preview
+    from pantheon.reparator import apply_template_preview
     
     # Parse arguments
     dry_run = False
@@ -283,7 +291,6 @@ def cmd_createnote(
     variables: Dict[str, str] = {}
     
     if args.strip():
-        # Parse flags and variables
         parts = shlex.split(args.strip())
         i = 0
         while i < len(parts):
@@ -294,7 +301,6 @@ def cmd_createnote(
                 dry_run = True
                 i += 1
             elif "=" in parts[i]:
-                # Variable assignment: var=value
                 var_parts = parts[i].split("=", 1)
                 if len(var_parts) == 2:
                     variables[var_parts[0].strip()] = var_parts[1].strip()
@@ -320,17 +326,14 @@ def cmd_createnote(
             if not templates:
                 print("No templates found. Creating blank note instead.")
             else:
-                # If template specified via flag, use it; otherwise prompt
                 if template_name:
-                    # Remove .md extension if present for matching
                     template_name_clean = template_name if not template_name.endswith(".md") else template_name[:-3]
-                    # Try to find matching template
                     template_file = None
                     for t in templates:
                         if t == template_name or t == template_name + ".md":
                             template_file = t
                             break
-                        if t[:-3] == template_name_clean:  # Match without extension
+                        if t[:-3] == template_name_clean:
                             template_file = t
                             break
                     if not template_file:
@@ -350,11 +353,9 @@ def cmd_createnote(
                 
                 if template_file:
                     try:
-                        # Use apply_template_preview for variable replacement
                         if config:
                             content = apply_template_preview(template_file, config, variables)
                         else:
-                            # Fallback: read template without replacement
                             with open(os.path.join(template_dir, template_file), "r", encoding="utf-8") as f:
                                 content = f.read()
                     except (FileNotFoundError, PermissionError, OSError) as e:
@@ -373,25 +374,33 @@ def cmd_createnote(
         except Exception as e:
             print(f"Error: Unexpected error accessing templates: {e}")
             content = ""
+
     name = prompt_input("Enter name for new note (without .md): ").strip()
     if not name.endswith(".md"):
         name += ".md"
-    full_path = Path(vaults[current_vault]) / name
+
     print(f"\n--- Preview: {name} ---\n{content}\n-------------------")
     
-    # If dry-run, just print and exit
     if dry_run:
         print("(Dry-run: Note not written to disk)")
         return
     
     if prompt_input("Create this note? (Y/N): ").strip().lower() == "y":
         try:
-            # Backup if file already exists (overwrite case)
-            if full_path.exists() and history_manager is not None:
-                history_manager.backup_note(full_path)
-            with open(full_path, "w", encoding="utf-8") as f:
-                f.write(content)
-            print(f"Note {name} created in {current_vault}!")
+            name_path = Path(name)
+            folder = str(name_path.parent).replace("\\", "/")
+            if folder == ".":
+                folder = ""
+            title = name_path.stem
+
+            spec = NoteSpec(title=title, folder=folder, body=content)
+            result = create_note(
+                spec, config, history_manager=history_manager, dry_run=False
+            )
+            if result:
+                print(f"Note {name} created in {current_vault}!")
+        except ValueError as e:
+            print(f"Error: {e}")
         except PermissionError as e:
             print(f"Error: Permission denied writing to '{name}': {e}")
             print(f"Hint: Check that the vault path '{vaults[current_vault]}' is writable.")

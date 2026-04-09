@@ -38,6 +38,23 @@ class Config:
     templates_remote_url: Optional[str] = None
     templates_local_path: Optional[Path] = None
     session_reminder_hours_before: int = 24
+    fgu_logs_root: Optional[Path] = None
+    fgu_campaigns_root: Optional[Path] = None   # user-chosen campaigns folder
+    voice_commands_enabled: bool = False
+    console_hidden_default: bool = True     # hide the console panel on startup
+    soundboard_folders: List[str] = field(default_factory=list)  # user-added SFX folders
+
+    # Input provider — swappable callable used by all interactive command prompts.
+    # Signature: (prompt_message: str) -> str
+    #
+    # CLI mode:  set to the module-level prompt_input() in assistant.py (uses input())
+    # UI mode:   replace with a function that posts a dialog / uses a queue /
+    #            awaits a callback — whatever the UI framework requires.
+    #
+    # Any command handler that needs to ask the user a question should receive
+    # this via its prompt_input_func parameter (already the case for most handlers).
+    # Never call input() directly in new code; always go through this provider.
+    input_provider: Optional[Callable[[str], str]] = field(default=None, repr=False)
     
     def __post_init__(self) -> None:
         """Initialize after dataclass creation."""
@@ -73,6 +90,24 @@ class Config:
                             self.templates_local_path = None
                     if "session_reminder_hours_before" in data:
                         self.session_reminder_hours_before = data.get("session_reminder_hours_before", 24)
+                    if "fgu_logs_root" in data:
+                        path_str = data.get("fgu_logs_root")
+                        if path_str:
+                            self.fgu_logs_root = Path(path_str)
+                        else:
+                            self.fgu_logs_root = None
+                    if "fgu_campaigns_root" in data:
+                        path_str = data.get("fgu_campaigns_root")
+                        if path_str:
+                            self.fgu_campaigns_root = Path(path_str)
+                        else:
+                            self.fgu_campaigns_root = None
+                    if "voice_commands_enabled" in data:
+                        self.voice_commands_enabled = data.get("voice_commands_enabled", False)
+                    if "console_hidden_default" in data:
+                        self.console_hidden_default = data.get("console_hidden_default", True)
+                    if "soundboard_folders" in data:
+                        self.soundboard_folders = data.get("soundboard_folders", [])
             except json.JSONDecodeError as e:
                 print(f"Error: Failed to parse settings.json: {e}")
                 print("Hint: The settings.json file may be corrupted. Check its format.")
@@ -120,7 +155,12 @@ class Config:
                     "default_model": self.default_model,
                     "templates_remote_url": self.templates_remote_url,
                     "templates_local_path": str(self.templates_local_path) if self.templates_local_path else None,
-                    "session_reminder_hours_before": self.session_reminder_hours_before
+                    "session_reminder_hours_before": self.session_reminder_hours_before,
+                    "fgu_logs_root": str(self.fgu_logs_root) if self.fgu_logs_root else None,
+                    "fgu_campaigns_root": str(self.fgu_campaigns_root) if self.fgu_campaigns_root else None,
+                    "voice_commands_enabled": self.voice_commands_enabled,
+                    "console_hidden_default": self.console_hidden_default,
+                    "soundboard_folders": self.soundboard_folders,
                 }, f)
         except PermissionError as e:
             print(f"Error: Permission denied writing to settings.json: {e}")

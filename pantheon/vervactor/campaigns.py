@@ -6,6 +6,9 @@ of campaign folders, party members, NPCs, locations, and session notes.
 
 This module is part of the Vervactor domain in the Pantheon architecture,
 responsible for campaign creation and vault setup.
+
+Note file creation is delegated to the Insitor domain
+(``pantheon.insitor.create_note``).
 """
 
 import os
@@ -14,6 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Literal, TYPE_CHECKING
 from datetime import datetime
+
+from pantheon.insitor import NoteSpec, create_note
 
 if TYPE_CHECKING:
     from core.config import Config
@@ -119,10 +124,8 @@ def create_campaign(name: str, config: "Config") -> Campaign:
         raise ValueError(f"Campaign '{safe_name}' already exists")
     
     try:
-        # Create campaign directory
+        # Create campaign directory tree
         campaign_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Create subdirectories
         (campaign_dir / "Party").mkdir(parents=False, exist_ok=True)
         (campaign_dir / "NPCs").mkdir(parents=False, exist_ok=True)
         (campaign_dir / "NPCs" / "Ally").mkdir(parents=False, exist_ok=True)
@@ -133,22 +136,19 @@ def create_campaign(name: str, config: "Config") -> Campaign:
         (campaign_dir / "Locations").mkdir(parents=False, exist_ok=True)
         (campaign_dir / "Sessions").mkdir(parents=False, exist_ok=True)
         
-        # Create _campaign.md file with frontmatter
-        campaign_file = campaign_dir / "_campaign.md"
-        frontmatter = f"""---
-type: campaign
-name: {safe_name}
-status: active
----
-
-# {safe_name}
-
-## Campaign Overview
-
-"""
-        
-        with open(campaign_file, "w", encoding="utf-8") as f:
-            f.write(frontmatter)
+        # _campaign.md via Insitor
+        folder = campaign_dir.relative_to(vault_path).as_posix()
+        spec = NoteSpec(
+            title="_campaign",
+            folder=folder,
+            frontmatter={
+                "type": "campaign",
+                "name": safe_name,
+                "status": "active",
+            },
+            body=f"# {safe_name}\n\n## Campaign Overview\n\n",
+        )
+        create_note(spec, config)
         
         print(f"Campaign '{safe_name}' created successfully at: {campaign_dir.relative_to(vault_path)}")
         
@@ -183,33 +183,30 @@ def create_party_member(campaign: Campaign, name: str, config: "Config") -> Path
     if not safe_name:
         raise ValueError("Character name cannot be empty")
     
-    # Create filename from character name
-    filename = safe_name.replace(" ", "_") + ".md"
-    character_file = campaign.path / "Party" / filename
+    file_stem = safe_name.replace(" ", "_")
+    character_file = campaign.path / "Party" / f"{file_stem}.md"
     
-    # Check if character already exists
     if character_file.exists():
         raise ValueError(f"Party member '{safe_name}' already exists")
     
-    # Create frontmatter and basic content
-    frontmatter = f"""---
-type: character
-role: pc
-campaign: {campaign.name}
----
-
-# {safe_name}
-
-## Character Details
-
-"""
+    vault_path = Path(config.vaults[config.current_vault])
+    folder = (campaign.path / "Party").relative_to(vault_path).as_posix()
     
     try:
-        with open(character_file, "w", encoding="utf-8") as f:
-            f.write(frontmatter)
+        spec = NoteSpec(
+            title=file_stem,
+            folder=folder,
+            frontmatter={
+                "type": "character",
+                "role": "pc",
+                "campaign": campaign.name,
+            },
+            body=f"# {safe_name}\n\n## Character Details\n\n",
+        )
+        result = create_note(spec, config)
         
-        print(f"Party member '{safe_name}' created: {character_file.name}")
-        return character_file
+        print(f"Party member '{safe_name}' created: {result.name}")
+        return result
         
     except PermissionError as e:
         raise PermissionError(f"Permission denied creating party member '{safe_name}': {e}")
@@ -242,53 +239,46 @@ def create_npc(campaign: Campaign, name: str, attitude: str, config: "Config") -
     if not safe_name:
         raise ValueError("Character name cannot be empty")
     
-    # Validate attitude
     valid_attitudes = ["ally", "friendly", "neutral", "adversarial", "antagonist"]
     attitude_lower = attitude.strip().lower()
     if attitude_lower not in valid_attitudes:
         raise ValueError(f"Invalid attitude '{attitude}'. Must be one of: {', '.join(valid_attitudes)}")
     
-    # Create filename from character name
-    filename = safe_name.replace(" ", "_") + ".md"
+    file_stem = safe_name.replace(" ", "_")
     npc_dir = campaign.path / "NPCs" / attitude_lower.capitalize()
-    character_file = npc_dir / filename
+    character_file = npc_dir / f"{file_stem}.md"
     
-    # Check if character already exists
     if character_file.exists():
         raise ValueError(f"NPC '{safe_name}' already exists in {attitude_lower} category")
     
-    # Create frontmatter and basic content
-    frontmatter = f"""---
-type: character
-role: npc
-attitude: {attitude_lower}
-campaign: {campaign.name}
----
-
-# {safe_name}
-
-## Character Details
-
-"""
+    vault_path = Path(config.vaults[config.current_vault])
+    folder = npc_dir.relative_to(vault_path).as_posix()
     
     try:
-        with open(character_file, "w", encoding="utf-8") as f:
-            f.write(frontmatter)
+        spec = NoteSpec(
+            title=file_stem,
+            folder=folder,
+            frontmatter={
+                "type": "character",
+                "role": "npc",
+                "attitude": attitude_lower,
+                "campaign": campaign.name,
+            },
+            body=f"# {safe_name}\n\n## Character Details\n\n",
+        )
+        result = create_note(spec, config)
         
-        # Automatically add tag based on attitude (e.g., #Ally, #Friendly)
-        # Capitalize first letter for tag name
         tag_name = attitude_lower.capitalize()
         tag_added = False
         try:
             from pantheon.obarator import add_tag
-            add_tag(character_file, tag_name)
+            add_tag(result, tag_name)
             tag_added = True
         except Exception as e:
-            # Don't fail NPC creation if tag addition fails, just warn
             print(f"Warning: Failed to add tag '{tag_name}' to NPC '{safe_name}': {e}")
         
-        print(f"NPC '{safe_name}' created in {attitude_lower} category: {character_file.name}")
-        return character_file, tag_added
+        print(f"NPC '{safe_name}' created in {attitude_lower} category: {result.name}")
+        return result, tag_added
         
     except PermissionError as e:
         raise PermissionError(f"Permission denied creating NPC '{safe_name}': {e}")
@@ -319,32 +309,29 @@ def create_location(campaign: Campaign, name: str, config: "Config") -> Path:
     if not safe_name:
         raise ValueError("Location name cannot be empty")
     
-    # Create filename from location name
-    filename = safe_name.replace(" ", "_") + ".md"
-    location_file = campaign.path / "Locations" / filename
+    file_stem = safe_name.replace(" ", "_")
+    location_file = campaign.path / "Locations" / f"{file_stem}.md"
     
-    # Check if location already exists
     if location_file.exists():
         raise ValueError(f"Location '{safe_name}' already exists")
     
-    # Create frontmatter and basic content
-    frontmatter = f"""---
-type: location
-campaign: {campaign.name}
----
-
-# {safe_name}
-
-## Location Details
-
-"""
+    vault_path = Path(config.vaults[config.current_vault])
+    folder = (campaign.path / "Locations").relative_to(vault_path).as_posix()
     
     try:
-        with open(location_file, "w", encoding="utf-8") as f:
-            f.write(frontmatter)
+        spec = NoteSpec(
+            title=file_stem,
+            folder=folder,
+            frontmatter={
+                "type": "location",
+                "campaign": campaign.name,
+            },
+            body=f"# {safe_name}\n\n## Location Details\n\n",
+        )
+        result = create_note(spec, config)
         
-        print(f"Location '{safe_name}' created: {location_file.name}")
-        return location_file
+        print(f"Location '{safe_name}' created: {result.name}")
+        return result
         
     except PermissionError as e:
         raise PermissionError(f"Permission denied creating location '{safe_name}': {e}")
@@ -479,79 +466,56 @@ def create_session(campaign: Campaign, title: str, config: "Config") -> Path:
     if not safe_title:
         raise ValueError("Session title cannot be empty")
     
-    # Get next session number
     session_number = _get_next_session_number(campaign)
     
-    # Sanitize title for filename (remove special chars, replace spaces)
-    safe_filename = re.sub(r'[<>:"/\\|?*]', '', safe_title)
-    safe_filename = safe_filename.replace(" ", "-")
-    safe_filename = safe_filename[:50]  # Limit length
+    sanitized = re.sub(r'[<>:"/\\|?*]', '', safe_title)
+    sanitized = sanitized.replace(" ", "-")[:50]
     
-    # Create filename: Session-XXX-<SanitizedTitle>.md
-    filename = f"Session-{session_number:03d}-{safe_filename}.md"
+    note_title = f"Session-{session_number:03d}-{sanitized}"
     sessions_dir = campaign.path / "Sessions"
     
     if not sessions_dir.exists():
-        # Ensure Sessions directory exists
         try:
             sessions_dir.mkdir(parents=True, exist_ok=True)
         except (PermissionError, OSError) as e:
             raise OSError(f"Failed to create Sessions directory: {e}")
     
-    session_file = sessions_dir / filename
-    
-    # Check if file already exists (unlikely, but handle it)
+    session_file = sessions_dir / f"{note_title}.md"
     if session_file.exists():
-        raise ValueError(f"Session file '{filename}' already exists")
+        raise ValueError(f"Session file '{note_title}.md' already exists")
     
-    # Get current date
     today = datetime.now().strftime("%Y-%m-%d")
-    
-    # Find previous session for linking
     previous_session = _find_previous_session(campaign)
     
-    # Build frontmatter
-    frontmatter = f"""---
-type: session
-campaign: {campaign.name}
-number: {session_number}
-title: {safe_title}
-date: {today}
----
-
-# Session {session_number}: {safe_title}
-
-**Campaign:** [[_campaign]]
-
-"""
-    
-    # Add link to previous session if exists
+    # Build body
+    body = (
+        f"# Session {session_number}: {safe_title}\n\n"
+        f"**Campaign:** [[_campaign]]\n\n"
+    )
     if previous_session:
-        prev_session_name = previous_session.stem
-        frontmatter += f"**Previous Session:** [[{prev_session_name}]]\n\n"
+        body += f"**Previous Session:** [[{previous_session.stem}]]\n\n"
+    body += "## Attendees\n\n- \n\n## Summary\n\n\n## Notable NPCs\n\n- \n\n## Events & Notes\n\n"
     
-    # Add standard sections
-    content = f"""{frontmatter}## Attendees
-
-- 
-
-## Summary
-
-
-## Notable NPCs
-
-- 
-
-## Events & Notes
-
-"""
+    vault_path = Path(config.vaults[config.current_vault])
+    folder = sessions_dir.relative_to(vault_path).as_posix()
     
     try:
-        with open(session_file, "w", encoding="utf-8") as f:
-            f.write(content)
+        spec = NoteSpec(
+            title=note_title,
+            folder=folder,
+            frontmatter={
+                "type": "session",
+                "campaign": campaign.name,
+                "number": session_number,
+                "title": safe_title,
+                "date": today,
+            },
+            body=body,
+        )
+        result = create_note(spec, config)
         
-        print(f"Session {session_number} '{safe_title}' created: {session_file.name}")
-        return session_file
+        print(f"Session {session_number} '{safe_title}' created: {result.name}")
+        return result
         
     except PermissionError as e:
         raise PermissionError(f"Permission denied creating session '{safe_title}': {e}")

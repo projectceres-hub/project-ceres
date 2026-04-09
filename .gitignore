@@ -8,6 +8,8 @@ __pycache__/
 variables.env
 settings.json
 vaults.json
+.tidal_token.json
+.youtube_token.json
 
 # API keys / secrets — never commit these
 *.txt
@@ -15,6 +17,16 @@ gm assistant chat gpt api key.txt
 
 # Generated exports (runtime output)
 exports/
+
+# Runtime data directories (auto-created by the app — never commit)
+logs/
+backups/
+.ceres_history/
+.ceres_index/
+inbox/
+
+# Catch-all for log files
+*.log
 
 # Large data files
 db.xml
@@ -30,6 +42,10 @@ git-save.ps1
 SCRATCHPAD.md
 SANITY_CHECK_REPORT.md
 SCRATCH*.md
+HANDOFF.md
+CURSOR_BRIEF.md
+SESSION_PROMPT.md
+
 
 # OS files
 .DS_Store
@@ -43,4 +59,7 @@ Thumbs.db
 
 # Cursor Generated Files
 .cursorrules
+.cursor/
 
+# AI Helper Files
+PROJECT_MAP.md

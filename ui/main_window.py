@@ -13,19 +13,20 @@ Panel slots (initial layout):
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Callable, Optional
 
 try:
     from PyQt5.QtWidgets import (
         QMainWindow, QWidget, QLabel, QStatusBar, QMenuBar,
-        QAction, QSizePolicy, QDockWidget, QMessageBox,
+        QAction, QSizePolicy, QDockWidget, QMessageBox, QTabBar,
     )
     from PyQt5.QtCore import Qt, QSize, QSettings
     from PyQt5.QtGui import QFont, QIcon, QPalette, QColor
 except ImportError:
     from PySide6.QtWidgets import (  # type: ignore
         QMainWindow, QWidget, QLabel, QStatusBar, QMenuBar,
-        QAction, QSizePolicy, QDockWidget, QMessageBox,
+        QAction, QSizePolicy, QDockWidget, QMessageBox, QTabBar,
     )
     from PySide6.QtCore import Qt, QSize, QSettings  # type: ignore
     from PySide6.QtGui import QFont, QIcon, QPalette, QColor  # type: ignore
@@ -40,6 +41,16 @@ from ui.panels.discord_panel      import DiscordPanel
 from ui.panels.spotify_panel      import SpotifyPanel
 from ui.panels.fgu_panel          import FGUPanel
 from ui.panels.scheduler_panel    import SchedulerPanel
+from ui.panels.chat_panel         import ChatPanel
+from ui.panels.browser_panel      import BrowserPanel
+from ui.panels.syrinscape_panel   import SyrinscapePanel
+from ui.panels.youtube_panel      import YouTubePanel
+from ui.panels.tidal_panel        import TidalPanel
+from ui.panels.local_music_panel  import LocalMusicPanel
+from ui.panels.mixer_panel        import MixerPanel
+from ui.dialogs.preferences_dialog import PreferencesDialog
+
+_ASSETS = Path(__file__).resolve().parent / "assets"
 
 
 class MainWindow(QMainWindow):
@@ -77,45 +88,20 @@ class MainWindow(QMainWindow):
         self._build_menu_bar()
         self._build_status_bar()
         self._restore_geometry()
+        self._apply_tab_icons()   # must run AFTER restoreState() rebuilds tab bars
 
-    # ── Central widget ─────────────────────────────────────────────────────────
+    # ── Central widget — Ceres Chat ────────────────────────────────────────────
 
     def _build_central_widget(self) -> None:
         """
-        The central widget is a placeholder area that shows when no content
-        panel is occupying the centre.  Future panels (e.g. a note editor or
-        map viewer) will live here.
+        The central widget is the Ceres conversational chat panel.
+        Users interact with the GM Assistant through plain English here;
+        the agent interprets intent and dispatches to the right panel/module.
         """
-        central = QWidget()
-        central.setObjectName("CentralPlaceholder")
-        central.setStyleSheet(f"background: {BG};")
-        central.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-
-        # Watermark label
-        lbl = QLabel("⚔  GM Assistant", central)
-        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)  # type: ignore[attr-defined]
-        lbl.setStyleSheet(
-            f"color: {BORDER}; font-size: 48px; font-weight: bold;"
-            f"font-family: Consolas, 'Fira Code', monospace;"
-        )
-        lbl.setGeometry(0, 0, 800, 200)
-
-        # Wire resize so the watermark stays centred
-        central._label = lbl  # type: ignore[attr-defined]
-
-        self.setCentralWidget(central)
-
-    def resizeEvent(self, event) -> None:  # type: ignore[override]
-        super().resizeEvent(event)
-        cw = self.centralWidget()
-        if cw and hasattr(cw, "_label"):
-            lbl = cw._label
-            lbl.setGeometry(
-                (cw.width() - 800) // 2,
-                (cw.height() - 200) // 2,
-                800,
-                200,
-            )
+        self._chat_panel = ChatPanel(self._config, self._run_command, self)
+        self._chat_panel.status_message.connect(self._set_status)
+        self._chat_panel.request_console.connect(self._show_console_output)
+        self.setCentralWidget(self._chat_panel)
 
     # ── Panels ─────────────────────────────────────────────────────────────────
 
@@ -128,11 +114,13 @@ class MainWindow(QMainWindow):
         self._vault_panel.note_opened.connect(self._on_note_opened)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self._vault_panel)  # type: ignore[attr-defined]
 
-        # 2. Console — bottom
+        # 2. Console — bottom (power-user / raw output; hidden by default)
         self._console_panel = ConsolePanel(self._config, self._run_command, self)
         self._console_panel.status_message.connect(self._set_status)
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self._console_panel)  # type: ignore[attr-defined]
-        self._console_panel.setMaximumHeight(280)
+        self._console_panel.setMaximumHeight(240)
+        if getattr(self._config, "console_hidden_default", True):
+            self._console_panel.hide()   # hidden per user preference (default: hidden)
 
         # 3. Discord — right side
         self._discord_panel = DiscordPanel(self._config, self._run_command, self)
@@ -167,6 +155,63 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._scheduler_panel)  # type: ignore[attr-defined]
         self.tabifyDockWidget(self._fgu_panel, self._scheduler_panel)
 
+        # 8. Browser — right side, tabbed with the other right panels
+        self._browser_panel = BrowserPanel(self._config, self)
+        self._browser_panel.status_message.connect(self._set_status)
+        self._browser_panel.tab_title_changed.connect(self._apply_tab_icons)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._browser_panel)  # type: ignore[attr-defined]
+        self.tabifyDockWidget(self._scheduler_panel, self._browser_panel)
+
+        # 9. Syrinscape — right side, tabbed with the other right panels
+        self._syrinscape_panel = SyrinscapePanel(self._config, self._run_command, self)
+        self._syrinscape_panel.status_message.connect(self._set_status)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._syrinscape_panel)  # type: ignore[attr-defined]
+        self.tabifyDockWidget(self._browser_panel, self._syrinscape_panel)
+
+        # Wire Discord Syrinscape voice commands → Syrinscape panel (must come after panel exists)
+        self._discord_panel.syrinscape_command.connect(
+            self._syrinscape_panel.handle_command
+        )
+
+        # 10. YouTube — right side, tabbed with the other right panels
+        self._youtube_panel = YouTubePanel(self._config, self._run_command, self)
+        self._youtube_panel.status_message.connect(self._set_status)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._youtube_panel)  # type: ignore[attr-defined]
+        self.tabifyDockWidget(self._syrinscape_panel, self._youtube_panel)
+
+        # Wire Discord YouTube voice commands → YouTube panel
+        self._discord_panel.youtube_command.connect(self._youtube_panel.handle_command)
+
+        # 11. Tidal — right side, tabbed with the other right panels
+        self._tidal_panel = TidalPanel(self._config, self._run_command, self)
+        self._tidal_panel.status_message.connect(self._set_status)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._tidal_panel)  # type: ignore[attr-defined]
+        self.tabifyDockWidget(self._youtube_panel, self._tidal_panel)
+
+        # Wire Discord Tidal voice commands → Tidal panel
+        self._discord_panel.tidal_command.connect(self._tidal_panel.handle_command)
+
+        # 12. Local Music — right side, tabbed with the other right panels
+        self._local_music_panel = LocalMusicPanel(self._config, self._run_command, self)
+        self._local_music_panel.status_message.connect(self._set_status)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._local_music_panel)  # type: ignore[attr-defined]
+        self.tabifyDockWidget(self._tidal_panel, self._local_music_panel)
+
+        # Wire Discord local music voice commands → Local Music panel
+        self._discord_panel.local_music_command.connect(self._local_music_panel.handle_command)
+
+        # 13. Mixer — left side (all source panels must exist before register_source)
+        self._mixer_panel = MixerPanel(self)
+        self._mixer_panel.status_message.connect(self._set_status)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self._mixer_panel)  # type: ignore[attr-defined]
+
+        self._mixer_panel.register_source("Soundboard", self._soundboard_panel)
+        self._mixer_panel.register_source("Syrinscape", self._syrinscape_panel, "syrinscape.png")
+        self._mixer_panel.register_source("Spotify",    self._spotify_panel,    "spotify.png")
+        self._mixer_panel.register_source("YouTube",      self._youtube_panel,      "youtube.png")
+        self._mixer_panel.register_source("Tidal",        self._tidal_panel,        "tidal.png")
+        self._mixer_panel.register_source("Local Music",  self._local_music_panel,  "music.png")
+
         # ── Wire Scheduler ↔ Discord ──────────────────────────────────────────
         # Scheduler → Discord
         self._scheduler_panel.request_channels.connect(
@@ -195,6 +240,44 @@ class MainWindow(QMainWindow):
             self._scheduler_panel.on_poll_error
         )
 
+    # ── Tab icons ─────────────────────────────────────────────────────────────
+
+    # Maps dock-widget windowTitle() → icon filename in ui/assets/
+    _TAB_ICONS: dict[str, str] = {
+        "Vault / Notes":    "obsidian.png",
+        "Discord":          "discord.png",
+        "Spotify":          "spotify.png",
+        "Fantasy Grounds":  "fantasygrounds.png",
+        "Syrinscape":       "syrinscape.png",
+        "YouTube":          "youtube.png",
+        "Browser":          "chrome.png",
+        "Tidal":            "tidal.png",
+        "Local Music":      "music.png",
+    }
+
+    def _apply_tab_icons(self) -> None:
+        """Set brand icons directly on every QTabBar tab created by dock tabification."""
+        icon_cache: dict[str, QIcon] = {}
+        for title, filename in self._TAB_ICONS.items():
+            path = _ASSETS / filename
+            if path.exists():
+                icon_cache[title] = QIcon(str(path))
+
+        # Browser uses dynamic window titles (page name) — map tab text → dock objectName
+        titles_to_browser: set[str] = set()
+        for dock in self.findChildren(QDockWidget):
+            if dock.objectName() == "BrowserPanel":
+                titles_to_browser.add(dock.windowTitle())
+
+        for tab_bar in self.findChildren(QTabBar):
+            tab_bar.setIconSize(QSize(20, 20))
+            for idx in range(tab_bar.count()):
+                title = tab_bar.tabText(idx)
+                if title in icon_cache:
+                    tab_bar.setTabIcon(idx, icon_cache[title])
+                elif title in titles_to_browser and "Browser" in icon_cache:
+                    tab_bar.setTabIcon(idx, icon_cache["Browser"])
+
     # ── Menu bar ───────────────────────────────────────────────────────────────
 
     def _build_menu_bar(self) -> None:
@@ -211,13 +294,22 @@ class MainWindow(QMainWindow):
         # ── View menu — panel toggles ──
         view_menu = mb.addMenu("&View")
         view_menu.addAction(self._vault_panel.toggleViewAction())
-        view_menu.addAction(self._console_panel.toggleViewAction())
+        # Console is hidden by default; toggle here for power users
+        console_action = self._console_panel.toggleViewAction()
+        console_action.setText("🖥  Console  (power user)")
+        view_menu.addAction(console_action)
         view_menu.addSeparator()
         view_menu.addAction(self._discord_panel.toggleViewAction())
         view_menu.addAction(self._spotify_panel.toggleViewAction())
         view_menu.addAction(self._soundboard_panel.toggleViewAction())
         view_menu.addAction(self._fgu_panel.toggleViewAction())
         view_menu.addAction(self._scheduler_panel.toggleViewAction())
+        view_menu.addAction(self._browser_panel.toggleViewAction())
+        view_menu.addAction(self._syrinscape_panel.toggleViewAction())
+        view_menu.addAction(self._youtube_panel.toggleViewAction())
+        view_menu.addAction(self._tidal_panel.toggleViewAction())
+        view_menu.addAction(self._local_music_panel.toggleViewAction())
+        view_menu.addAction(self._mixer_panel.toggleViewAction())
         view_menu.addSeparator()
         self._add_action(view_menu, "Reset Layout", self._reset_layout)
 
@@ -228,6 +320,12 @@ class MainWindow(QMainWindow):
         mod_menu.addAction(self._soundboard_panel.toggleViewAction())
         mod_menu.addAction(self._fgu_panel.toggleViewAction())
         mod_menu.addAction(self._scheduler_panel.toggleViewAction())
+        mod_menu.addAction(self._browser_panel.toggleViewAction())
+        mod_menu.addAction(self._syrinscape_panel.toggleViewAction())
+        mod_menu.addAction(self._youtube_panel.toggleViewAction())
+        mod_menu.addAction(self._tidal_panel.toggleViewAction())
+        mod_menu.addAction(self._local_music_panel.toggleViewAction())
+        mod_menu.addAction(self._mixer_panel.toggleViewAction())
 
         # ── Help menu ──
         help_menu = mb.addMenu("&Help")
@@ -280,78 +378,136 @@ class MainWindow(QMainWindow):
 
     # ── Slots ──────────────────────────────────────────────────────────────────
 
+    def _on_preferences_saved(self) -> None:
+        """Apply live preference changes immediately after the dialog saves."""
+        # Console visibility
+        if getattr(self._config, "console_hidden_default", True):
+            self._console_panel.hide()
+        # (Other live changes — vault path, FGU root — take effect on next command use)
+        self._set_status("Preferences saved.")
+        # Clear the chat agent's client so it re-reads the (possibly new) API key
+        if hasattr(self._chat_panel, "_agent"):
+            self._chat_panel._agent._client = None
+
+    def _show_console_output(self, text: str) -> None:
+        """Show the console panel and populate it with full command output."""
+        self._console_panel.show()
+        self._console_panel.raise_()
+        self._console_panel.print_output("── Full command output ──", color=ACCENT)
+        self._console_panel.print_output(text)
+
     def _on_note_opened(self, path: str) -> None:
-        self._console_panel.print_success(f"Opened note: {path}")
+        self._chat_panel.print_success(f"Opened note: {path}")
         self._set_status(f"Note: {path}")
 
     def _refresh_vaults(self) -> None:
         self._run_command("sync-obsidian", "", self._config)
         self._vault_panel.refresh_vault_selector()
         self._set_status("Vaults refreshed.")
-        self._console_panel.print_output("Vaults refreshed.")
+        self._chat_panel.print_output("Vaults refreshed.")
 
     def _open_settings(self) -> None:
-        # Placeholder — settings dialog to be implemented
-        QMessageBox.information(
-            self,
-            "Settings",
-            "Settings panel coming in a future update.\n\n"
-            "Edit settings.json / variables.env directly for now.",
+        dlg = PreferencesDialog(
+            config=self._config,
+            env_path=getattr(self._config, "env_file", "variables.env"),
+            parent=self,
         )
+        dlg.saved.connect(self._on_preferences_saved)
+        dlg.exec()
 
     def _reset_layout(self) -> None:
-        # Re-dock everything to default positions
+        """Re-dock everything to default positions."""
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea,   self._vault_panel)      # type: ignore[attr-defined]
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self._console_panel)    # type: ignore[attr-defined]
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,  self._discord_panel)    # type: ignore[attr-defined]
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,  self._spotify_panel)    # type: ignore[attr-defined]
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,  self._soundboard_panel) # type: ignore[attr-defined]
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,  self._fgu_panel)        # type: ignore[attr-defined]
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,  self._scheduler_panel)  # type: ignore[attr-defined]
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,  self._discord_panel)     # type: ignore[attr-defined]
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,  self._spotify_panel)     # type: ignore[attr-defined]
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,  self._soundboard_panel)  # type: ignore[attr-defined]
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,  self._fgu_panel)         # type: ignore[attr-defined]
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,  self._scheduler_panel)   # type: ignore[attr-defined]
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,  self._browser_panel)     # type: ignore[attr-defined]
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,  self._syrinscape_panel)  # type: ignore[attr-defined]
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,  self._youtube_panel)     # type: ignore[attr-defined]
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,  self._tidal_panel)            # type: ignore[attr-defined]
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,  self._local_music_panel)    # type: ignore[attr-defined]
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea,   self._mixer_panel)           # type: ignore[attr-defined]
         self.tabifyDockWidget(self._discord_panel,    self._spotify_panel)
         self.tabifyDockWidget(self._spotify_panel,    self._soundboard_panel)
         self.tabifyDockWidget(self._soundboard_panel, self._fgu_panel)
         self.tabifyDockWidget(self._fgu_panel,        self._scheduler_panel)
-        for panel in (self._vault_panel, self._console_panel, self._discord_panel,
-                      self._spotify_panel, self._soundboard_panel, self._fgu_panel,
-                      self._scheduler_panel):
-            panel.show()
+        self.tabifyDockWidget(self._scheduler_panel,  self._browser_panel)
+        self.tabifyDockWidget(self._browser_panel,    self._syrinscape_panel)
+        self.tabifyDockWidget(self._syrinscape_panel, self._youtube_panel)
+        self.tabifyDockWidget(self._youtube_panel,    self._tidal_panel)
+        self.tabifyDockWidget(self._tidal_panel,      self._local_music_panel)
         self._discord_panel.raise_()
-        self._set_status("Layout reset.")
+        self._apply_tab_icons()
 
-    def _show_help(self) -> None:
-        cmds = sorted(self._config.commands.keys())
-        text = "\n".join(f"  {c}" for c in cmds)
-        self._console_panel.print_output("── Available commands ──", color=ACCENT)
-        for cmd in cmds:
-            _, help_text = self._config.commands[cmd]
-            self._console_panel.print_output(f"  {cmd:<30} {help_text}")
+    # ── Window lifecycle ───────────────────────────────────────────────────────
 
-    def _show_about(self) -> None:
-        QMessageBox.about(
-            self,
-            "About GM Assistant",
-            f"<b>GM Assistant — Project Ceres</b><br>"
-            f"Version {self.VERSION}<br><br>"
-            f"A modular Game Master assistant integrating<br>"
-            f"Obsidian, Discord, Spotify, Fantasy Grounds,<br>"
-            f"and a built-in soundboard.<br><br>"
-            f"<i>Built with PyQt5 / PySide6</i>",
-        )
-
-    # ── Window geometry persistence ────────────────────────────────────────────
-
-    def _restore_geometry(self) -> None:
-        settings = QSettings("ProjectCeres", "GMAssistant")
-        geometry = settings.value("geometry")
-        state    = settings.value("windowState")
-        if geometry:
-            self.restoreGeometry(geometry)
-        if state:
-            self.restoreState(state)
+    def showEvent(self, event) -> None:  # type: ignore[override]
+        """Re-apply tab icons after Qt rebuilds tab bars on first show."""
+        super().showEvent(event)
+        self._apply_tab_icons()
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
-        settings = QSettings("ProjectCeres", "GMAssistant")
-        settings.setValue("geometry",    self.saveGeometry())
-        settings.setValue("windowState", self.saveState())
+        """Close all docks explicitly to avoid QThread-destroyed warnings."""
+        for dock in self.findChildren(QDockWidget):
+            dock.close()
+        self._restore_geometry()   # save geometry on close
         super().closeEvent(event)
+
+    # ── Geometry persistence ────────────────────────────────────────────────────
+
+    def _restore_geometry(self) -> None:
+        """Save or restore window geometry and dock state via QSettings."""
+        settings = QSettings("ProjectCeres", "GMAssistant")
+        # On close we save; on init we just initialise the settings object.
+        # Called once at startup (no-op — state not yet saved) and once on close.
+        if not self.isVisible():
+            # Save on close
+            settings.setValue("geometry", self.saveGeometry())
+            settings.setValue("windowState", self.saveState())
+        else:
+            # Restore on startup if saved state exists
+            geo = settings.value("geometry")
+            state = settings.value("windowState")
+            if geo:
+                self.restoreGeometry(geo)
+            if state:
+                self.restoreState(state)
+
+    # ── Help / About ────────────────────────────────────────────────────────────
+
+    def _show_help(self) -> None:
+        """Display a summary of available commands in a message box."""
+        text = (
+            "<b>GM Assistant — Quick Command Reference</b><br><br>"
+            "<b>Vault:</b> vaults, switch, addvault<br>"
+            "<b>Notes:</b> read, list, tree, createnote, editnote, search<br>"
+            "<b>Campaigns:</b> campaign-create, campaign-add-pc, campaign-add-npc<br>"
+            "<b>Sessions:</b> session-schedule, session-create, fgu-import-log<br>"
+            "<b>Discord:</b> !play, !pause, !skip, !stop, !search (Spotify)<br>"
+            "&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"
+            "!ytplay, !ytstop, !ytpause, !ytsearch (YouTube)<br>"
+            "&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"
+            "!tidalplay, !tidalstop, !tidalpause, !tidalsearch (Tidal)<br>"
+            "&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"
+            "!localplay, !localstop, !localpause, !localnext (Local Music)<br>"
+            "<b>Wake words:</b> Veras / Chroma — add bookmark, append note, "
+            "add session marker, play &lt;track&gt; on youtube/tidal/locally<br><br>"
+            "Full command list: see README.md"
+        )
+        QMessageBox.information(self, "Command Reference", text)
+
+    def _show_about(self) -> None:
+        """Display the About dialog."""
+        QMessageBox.about(
+            self,
+            f"About {self.APP_NAME}",
+            f"<b>{self.APP_NAME}</b><br>"
+            f"Version {self.VERSION}<br><br>"
+            "A modular GM Assistant for tabletop RPG game masters.<br>"
+            "Connects Discord, Obsidian, Fantasy Grounds Unity, Spotify,<br>"
+            "YouTube, Tidal, Syrinscape, and local audio — all in one Winamp-style interface.<br><br>"
+            "<i>Project Ceres</i>",
+        )

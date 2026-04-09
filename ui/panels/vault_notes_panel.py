@@ -75,7 +75,7 @@ class VaultNotesPanel(QDockWidget):
         run_command: Callable,
         parent: Optional[QWidget] = None,
     ) -> None:
-        super().__init__("⚔  Vault / Notes", parent)
+        super().__init__("Vault / Notes", parent)
         self._config = config
         self._run_command = run_command
         self._current_vault_path: Optional[Path] = None

@@ -408,6 +408,7 @@ class SpotifyPanel(QDockWidget):
     """
 
     status_message: Signal = Signal(str)
+    volume_changed: Signal = Signal(int)
 
     # ── Signals routed to the worker (queued, cross-thread) ───────────────────
     _sig_connect     = Signal(str, str, str)
@@ -430,7 +431,7 @@ class SpotifyPanel(QDockWidget):
         run_command: Callable,
         parent: Optional[QWidget] = None,
     ) -> None:
-        super().__init__("🎵  Spotify", parent)
+        super().__init__("Spotify", parent)
         self.setObjectName("SpotifyPanel")
         self.setAllowedAreas(Qt.DockWidgetArea.AllDockWidgetAreas)  # type: ignore[attr-defined]
         self.setFeatures(
@@ -1135,6 +1136,25 @@ class SpotifyPanel(QDockWidget):
     def _on_volume_changed(self, value: int) -> None:
         self._vol_label.setText(f"{value}%")
         self._vol_debounce.start()  # restart debounce window
+        self.volume_changed.emit(value)
+
+    def get_volume(self) -> int:
+        """Return the current volume slider value (0–100)."""
+        return self._vol_slider.value()
+
+    @Slot(int)
+    def set_volume(self, value: int) -> None:
+        """Set volume without triggering a volume_changed echo.
+
+        Args:
+            value: Volume level 0–100 sent by the Mixer panel.
+        """
+        self._vol_slider.blockSignals(True)
+        self._vol_slider.setValue(value)
+        self._vol_label.setText(f"{value}%")
+        self._vol_slider.blockSignals(False)
+        # Push directly to Spotify device — bypass the debounce for responsiveness.
+        self._sig_set_vol.emit(value)
 
     # ── Scene interaction ─────────────────────────────────────────────────────
 

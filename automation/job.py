@@ -1,44 +1,17 @@
 """
-Job module for Project Ceres automation engine.
+Job module for Project Ceres (Backward Compatibility Shim).
 
-Provides the Job dataclass for representing scheduled tasks.
+**Note:** The canonical implementation of this module has moved to
+`pantheon.serritor.job` as part of the Pantheon architecture migration.
+
+This module provides backward compatibility by re-exporting the public API
+from the new location. Existing code importing from `automation.job` will
+continue to work, but new code should import from `pantheon.serritor` instead.
+
+This shim will be maintained during the migration period and may be removed
+in a future version once all imports have been updated.
 """
 
-from dataclasses import dataclass
-from typing import Callable, Optional
-from datetime import datetime
+from pantheon.serritor.job import Job
 
-
-@dataclass
-class Job:
-    """
-    Represents a scheduled job.
-    
-    Attributes:
-        name: Unique identifier for the job
-        interval_seconds: Time interval between job executions in seconds
-        callable: Function to execute when the job runs
-        last_run: Timestamp of the last execution (None if never run)
-    """
-    name: str
-    interval_seconds: float
-    callable: Callable[[], None]
-    last_run: Optional[datetime] = None
-    
-    def should_run(self) -> bool:
-        """
-        Check if the job should run based on its interval.
-        
-        Returns:
-            True if enough time has passed since last run, False otherwise
-        """
-        if self.last_run is None:
-            return True
-        
-        elapsed = (datetime.now() - self.last_run).total_seconds()
-        return elapsed >= self.interval_seconds
-    
-    def mark_run(self) -> None:
-        """Mark the job as having been executed."""
-        self.last_run = datetime.now()
-
+__all__ = ["Job"]

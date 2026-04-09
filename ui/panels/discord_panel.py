@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import random
 import tempfile
 import threading
 import time
@@ -53,14 +54,14 @@ try:
         QPushButton, QLabel, QComboBox, QLineEdit,
         QTextEdit, QSizePolicy, QMessageBox,
     )
-    from PyQt5.QtCore import Qt, QThread, QObject, QTimer, QSettings, pyqtSignal as Signal
+    from PyQt5.QtCore import Qt, QThread, QObject, QTimer, QSettings, pyqtSignal as Signal, pyqtSlot as Slot
 except ImportError:
     from PySide6.QtWidgets import (  # type: ignore
         QDockWidget, QWidget, QVBoxLayout, QHBoxLayout,
         QPushButton, QLabel, QComboBox, QLineEdit,
         QTextEdit, QSizePolicy, QMessageBox,
     )
-    from PySide6.QtCore import Qt, QThread, QObject, QTimer, QSettings, Signal  # type: ignore
+    from PySide6.QtCore import Qt, QThread, QObject, QTimer, QSettings, Signal, Slot  # type: ignore
 
 from ui.theme import ACCENT, MUTED, TEXT, SUCCESS, WARNING, ERROR, PANEL, BORDER
 
@@ -89,6 +90,191 @@ CHUNK_SECONDS        = 30       # send a WAV chunk to Whisper every N seconds
 
 # Emoji used for poll reactions — indices 0-3 map to candidate date options
 POLL_EMOJIS: Tuple[str, ...] = ("1️⃣", "2️⃣", "3️⃣", "4️⃣")
+
+# ── Persona response pools ─────────────────────────────────────────────────────
+# Keyed by persona name (matches wake word), then by command type.
+# {label} / {note_path} are replaced from the command payload when present.
+
+PERSONA_RESPONSES: Dict[str, Dict[str, List[str]]] = {
+    "veras": {
+        "add_bookmark": [
+            "📍 Bookmark noted — *{label}*",
+            "📌 Marked. *{label}* is saved to the session.",
+            "✍️ Logged. Bookmark *{label}* has been recorded.",
+            "📝 *{label}* has been flagged for your records.",
+            "Got it — *{label}* added to your bookmarks.",
+        ],
+        "append_note": [
+            "📜 Note appended to *{note_path}*.",
+            "✍️ Written. *{note_path}* has been updated.",
+            "📝 Logged — your words are in *{note_path}*.",
+            "Done. *{note_path}* carries your new entry.",
+            "Added. Check *{note_path}* when you're ready.",
+        ],
+        "add_session_marker": [
+            "🗺️ Session marker placed — *{label}*",
+            "⏱️ Marked the moment. *{label}* is logged.",
+            "📍 *{label}* — stamped into the timeline.",
+            "✅ Session marker *{label}* has been set.",
+            "Noted. *{label}* is on the record.",
+        ],
+        "custom": [
+            "Heard you. I'll look into it.",
+            "Understood. Command received.",
+            "On it.",
+            "Noted.",
+            "Consider it done.",
+        ],
+        "syrinscape_play": [
+            "🎲 Setting the scene — *{query}* mood queued.",
+            "🎲 Atmosphere loading — *{query}*.",
+            "🎲 Got it. *{query}* mood — coming right up.",
+            "🎲 Soundscape shifting to *{query}*.",
+            "🎲 *{query}* — atmosphere engaged.",
+        ],
+        "syrinscape_stop": [
+            "🔇 Syrinscape silenced.",
+            "🔇 Audio stopped.",
+            "🔇 Quiet mode — all Syrinscape audio cut.",
+            "🔇 Done. The soundscape has been stilled.",
+            "🔇 Silence incoming.",
+        ],
+        "youtube_play": [
+            "🎬 Searching YouTube — *{query}* — audio incoming.",
+            "🎬 On it. Pulling up *{query}* from YouTube.",
+            "🎬 YouTube queued — *{query}* — playing now.",
+            "🎬 Found it. *{query}* — streaming audio.",
+            "🎬 *{query}* — loading from YouTube.",
+        ],
+        "youtube_stop": [
+            "🔇 YouTube audio stopped.",
+            "🔇 Cutting the YouTube stream.",
+            "🔇 Done. YouTube is silent.",
+            "🔇 YouTube playback halted.",
+            "🔇 Stream cut.",
+        ],
+        "tidal_play": [
+            "🎵 Searching Tidal — *{query}* — streaming now.",
+            "🎵 On it. Pulling up *{query}* from Tidal.",
+            "🎵 Tidal queued — *{query}* — playing now.",
+            "🎵 Found it. *{query}* — streaming from Tidal.",
+            "🎵 *{query}* — loading from Tidal.",
+        ],
+        "tidal_stop": [
+            "🔇 Tidal audio stopped.",
+            "🔇 Cutting the Tidal stream.",
+            "🔇 Done. Tidal is silent.",
+            "🔇 Tidal playback halted.",
+            "🔇 Stream cut.",
+        ],
+        "local_play": [
+            "🎵 Searching local library — *{query}* — playing now.",
+            "🎵 Found it locally — *{query}* — queuing up.",
+            "🎵 Local track: *{query}* — loading.",
+            "🎵 Playing *{query}* from your local collection.",
+            "🎵 *{query}* — pulling from local library.",
+        ],
+        "local_stop": [
+            "🔇 Local music stopped.",
+            "🔇 Stopping local playback.",
+            "🔇 Done. Local music is silent.",
+            "🔇 Local player halted.",
+            "🔇 Playback stopped.",
+        ],
+    },
+    "chroma": {
+        "add_bookmark": [
+            "🔖 Signal locked — *{label}* captured.",
+            "⚡ Bookmark *{label}* synced to the data stream.",
+            "🔹 *{label}* flagged in the index.",
+            "📡 Logged. *{label}* is now on record.",
+            "Frequency locked. *{label}* stored.",
+        ],
+        "append_note": [
+            "🔹 Transmission received. *{note_path}* updated.",
+            "⚡ Data appended to *{note_path}*.",
+            "📡 Signal written — *{note_path}* patched.",
+            "Uplink confirmed. *{note_path}* carries the new entry.",
+            "🔖 *{note_path}* has been updated.",
+        ],
+        "add_session_marker": [
+            "⏱️ Timeline marker *{label}* — locked in.",
+            "🔹 *{label}* — event logged to the stream.",
+            "📡 Marker *{label}* synced.",
+            "⚡ *{label}* stamped to the session grid.",
+            "Grid marker *{label}* recorded.",
+        ],
+        "custom": [
+            "⚡ Signal received. Processing.",
+            "🔹 Command acknowledged.",
+            "📡 Received. Standing by.",
+            "Processing your request.",
+            "Uplink confirmed.",
+        ],
+        "syrinscape_play": [
+            "🎲 Audio scene: *{query}* — engaging.",
+            "🎲 Routing *{query}* soundscape — initialising.",
+            "🎲 Signal locked. *{query}* mood loading.",
+            "🎲 Environment matrix shifting — *{query}*.",
+            "🎲 *{query}* — audio scene uploaded.",
+        ],
+        "syrinscape_stop": [
+            "🔇 Audio kill switch — confirmed.",
+            "🔇 Syrinscape feed severed.",
+            "🔇 Signal cut. All audio streams offline.",
+            "🔇 Transmission terminated.",
+            "🔇 Audio matrix cleared.",
+        ],
+        "youtube_play": [
+            "🎬 YouTube signal acquired — *{query}* — routing audio.",
+            "🎬 Stream locked. *{query}* — audio feed initialising.",
+            "🎬 Pulling *{query}* from the YouTube feed.",
+            "🎬 Uplink confirmed. *{query}* — playback online.",
+            "🎬 *{query}* — data stream engaged.",
+        ],
+        "youtube_stop": [
+            "🔇 YouTube feed severed.",
+            "🔇 Audio stream terminated.",
+            "🔇 YouTube signal cut.",
+            "🔇 Feed offline. YouTube stream ended.",
+            "🔇 Playback terminated.",
+        ],
+        "tidal_play": [
+            "🎵 Tidal signal acquired — *{query}* — routing audio.",
+            "🎵 Stream locked. *{query}* — Tidal feed initialising.",
+            "🎵 Pulling *{query}* from the Tidal catalogue.",
+            "🎵 Uplink confirmed. *{query}* — Tidal playback online.",
+            "🎵 *{query}* — Tidal data stream engaged.",
+        ],
+        "tidal_stop": [
+            "🔇 Tidal feed severed.",
+            "🔇 Tidal audio stream terminated.",
+            "🔇 Tidal signal cut.",
+            "🔇 Feed offline. Tidal stream ended.",
+            "🔇 Tidal playback terminated.",
+        ],
+        "local_play": [
+            "🎵 Local library scan — *{query}* — audio feed routing.",
+            "🎵 Signal acquired. *{query}* — local track initialising.",
+            "🎵 Pulling *{query}* from local storage.",
+            "🎵 Uplink confirmed. *{query}* — local playback online.",
+            "🎵 *{query}* — local data stream engaged.",
+        ],
+        "local_stop": [
+            "🔇 Local feed severed.",
+            "🔇 Local audio stream terminated.",
+            "🔇 Local signal cut.",
+            "🔇 Feed offline. Local stream ended.",
+            "🔇 Local playback terminated.",
+        ],
+    },
+}
+
+# Fallback display name for each wake word
+PERSONA_DISPLAY: Dict[str, str] = {
+    "veras":  "Veras",
+    "chroma": "Chroma",
+}
 
 # ── Conditional AudioSink base ─────────────────────────────────────────────────
 # discord.AudioSink is the correct base when discord.py (2.x) is installed.
@@ -234,9 +420,12 @@ class _DiscordWorker(QObject):
     channels_updated      = Signal(list)       # [(ch_id_str, ch_name), ...] voice
     text_channels_updated = Signal(list)       # [(ch_id_str, ch_name), ...] text
     members_updated       = Signal(list)       # [display_name, ...]
-    transcript_ready      = Signal(str, str)   # timestamp_str, text
-    command_detected      = Signal(str, str)   # command_type, raw_text
+    transcript_ready      = Signal(str, str)        # timestamp_str, text
+    command_detected      = Signal(str, str, str)   # command_type, raw_text, persona
     spotify_command       = Signal(str, str)   # action, query
+    youtube_command       = Signal(str, str)   # action, query
+    tidal_command         = Signal(str, str)   # action, query
+    local_music_command   = Signal(str, str)   # action, query → LocalMusicPanel
     poll_sent             = Signal(str)        # message_id (str)
     vote_updated          = Signal(dict)       # {option_idx: vote_count}
     poll_error            = Signal(str)        # error message
@@ -247,6 +436,21 @@ class _DiscordWorker(QObject):
         "!search", "!queue", "!volume", "!next",
     )
 
+    # Discord text commands routed to YouTube
+    _YOUTUBE_CMDS: Tuple[str, ...] = (
+        "!ytplay", "!ytstop", "!ytpause", "!ytsearch",
+    )
+
+    # Discord text commands routed to Tidal
+    _TIDAL_CMDS: Tuple[str, ...] = (
+        "!tidalplay", "!tidalstop", "!tidalpause", "!tidalsearch",
+    )
+
+    # Discord text commands routed to Local Music
+    _LOCAL_CMDS: Tuple[str, ...] = (
+        "!localplay", "!localstop", "!localpause", "!localnext",
+    )
+
     def __init__(self, token: str, parent: Optional[QObject] = None) -> None:
         super().__init__(parent)
         self._token = token
@@ -255,6 +459,7 @@ class _DiscordWorker(QObject):
         self._vc = None        # discord.VoiceClient, set when joining VC
         self._sink: Optional[_PCMSink] = None
         self._recording = False
+        self._reply_channel_id: Optional[int] = None   # text channel for persona replies
         # Poll state
         self._poll_message_id: Optional[int] = None
         self._poll_channel_id: Optional[int] = None
@@ -306,6 +511,9 @@ class _DiscordWorker(QObject):
                 self.channels_updated.emit(vcs)
                 tcs = [(str(ch.id), ch.name) for ch in guild.text_channels]
                 self.text_channels_updated.emit(tcs)
+                # Auto-select first text channel as default reply target
+                if tcs and self._reply_channel_id is None:
+                    self._reply_channel_id = int(tcs[0][0])
 
         @self._client.event
         async def on_voice_state_update(member, before, after) -> None:  # noqa: ANN001
@@ -334,6 +542,28 @@ class _DiscordWorker(QObject):
                     action = cmd.lstrip("!")
                     query = content[len(cmd):].strip()
                     self.spotify_command.emit(action, query)
+                    return
+
+            for cmd in self._YOUTUBE_CMDS:
+                if lower.startswith(cmd):
+                    action = cmd.lstrip("!")[2:]  # strip "yt" prefix → "play"/"stop"/"pause"/"search"
+                    query = content[len(cmd):].strip()
+                    self.youtube_command.emit(action, query)
+                    return
+
+            for cmd in self._TIDAL_CMDS:
+                if lower.startswith(cmd):
+                    action = cmd.lstrip("!")[5:]  # strip "tidal" prefix → "play"/"stop"/"pause"/"search"
+                    query = content[len(cmd):].strip()
+                    self.tidal_command.emit(action, query)
+                    return
+
+            # Local Music text commands: !localplay <query>, !localstop, !localpause, !localnext
+            for cmd in self._LOCAL_CMDS:
+                if lower.startswith(cmd):
+                    action = cmd.lstrip("!")[5:]  # strip "local" prefix → "play"/"stop"/"pause"/"next"
+                    query  = content[len(cmd):].strip()
+                    self.local_music_command.emit(action, query)
                     return
 
         try:
@@ -579,6 +809,32 @@ class _DiscordWorker(QObject):
             self._sink.cleanup()   # flushes final audio chunk
             self._sink = None
 
+    # ── Persona reply helpers ──────────────────────────────────────────────────
+
+    def set_reply_channel(self, channel_id: int) -> None:
+        """Set the text channel where persona acknowledgements are posted."""
+        self._reply_channel_id = channel_id
+
+    def send_bot_message(self, text: str) -> None:
+        """
+        Post *text* to the current reply channel from the bot account.
+        Thread-safe: can be called from the Qt thread.
+        """
+        if self._loop and self._client and self._reply_channel_id is not None:
+            asyncio.run_coroutine_threadsafe(
+                self._post_message(self._reply_channel_id, text),
+                self._loop,
+            )
+
+    async def _post_message(self, channel_id: int, text: str) -> None:
+        """Coroutine: fetch channel and send text."""
+        try:
+            channel = self._client.get_channel(channel_id)
+            if channel is not None:
+                await channel.send(text)
+        except Exception:
+            pass   # don't crash the bot loop over a reply failure
+
     # ── Audio → Whisper → signals ──────────────────────────────────────────────
 
     def _on_audio_chunk(self, wav_path: Path) -> None:
@@ -607,8 +863,10 @@ class _DiscordWorker(QObject):
                     from pantheon.convector.transcript_parser import (
                         extract_voice_commands_from_transcript_text,
                     )
+                    from pantheon.convector.wake_words import find_wake_word_prefix
                     for cmd in extract_voice_commands_from_transcript_text(text):
-                        self.command_detected.emit(cmd.type, cmd.text)
+                        persona = find_wake_word_prefix(cmd.text) or "veras"
+                        self.command_detected.emit(cmd.type, cmd.text, persona)
                 except Exception:
                     pass   # command extraction errors don't break transcription
 
@@ -632,10 +890,17 @@ class DiscordPanel(QDockWidget):
     Signals:
         status_message(msg)       — forwarded to main-window status bar
         spotify_command(act, q)   — forwarded to SpotifyPanel
+        syrinscape_command(act,q) — forwarded to SyrinscapePanel
+        youtube_command(act, q)   — forwarded to YouTubePanel
+        tidal_command(act, q)    — forwarded to TidalPanel
     """
 
-    status_message: Signal = Signal(str)
-    spotify_command: Signal = Signal(str, str)
+    status_message: Signal     = Signal(str)
+    spotify_command: Signal    = Signal(str, str)   # action, query → SpotifyPanel
+    syrinscape_command: Signal = Signal(str, str)   # action, query → SyrinscapePanel
+    youtube_command: Signal      = Signal(str, str)   # action, query → YouTubePanel
+    tidal_command: Signal        = Signal(str, str)   # action, query → TidalPanel
+    local_music_command: Signal  = Signal(str, str)   # action, query → LocalMusicPanel
 
     # ── Scheduler-facing signals ──────────────────────────────────────────────
     # Forwarded from _DiscordWorker so SchedulerPanel never touches the worker.
@@ -650,7 +915,7 @@ class DiscordPanel(QDockWidget):
         run_command: Callable,
         parent: Optional[QWidget] = None,
     ) -> None:
-        super().__init__("🎙  Discord", parent)
+        super().__init__("Discord", parent)
         self.setObjectName("DiscordPanel")
         self.setAllowedAreas(Qt.DockWidgetArea.AllDockWidgetAreas)   # type: ignore[attr-defined]
         self.setFeatures(
@@ -667,6 +932,7 @@ class DiscordPanel(QDockWidget):
         self._transcript_lines: List[str] = []
         self._recording = False
         self._record_start: Optional[float] = None
+        self._reply_channel_id: Optional[int] = None
 
         self._settings = QSettings("ProjectCeres", "GMAssistant")
 
@@ -792,6 +1058,25 @@ class DiscordPanel(QDockWidget):
         self._rec_status_lbl.setStyleSheet(f"color: {MUTED}; font-size: 10px;")
         layout.addWidget(self._rec_status_lbl)
 
+        # ── Reply channel selector ────────────────────────────────────────
+        reply_row = QHBoxLayout()
+        reply_lbl = QLabel("🤖 Reply ch:")
+        reply_lbl.setStyleSheet(f"color: {MUTED}; font-size: 10px;")
+        reply_row.addWidget(reply_lbl)
+
+        self._reply_channel_combo = QComboBox()
+        self._reply_channel_combo.setPlaceholderText("— auto (first text channel) —")
+        self._reply_channel_combo.setToolTip(
+            "Text channel where Veras / Chroma post their acknowledgement replies.\n"
+            "Auto-selects the first text channel when the bot connects."
+        )
+        self._reply_channel_combo.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        self._reply_channel_combo.currentIndexChanged.connect(self._on_reply_channel_changed)
+        reply_row.addWidget(self._reply_channel_combo)
+        layout.addLayout(reply_row)
+
         # ── Live transcript header ────────────────────────────────────────
         ts_header = QHBoxLayout()
 
@@ -819,47 +1104,6 @@ class DiscordPanel(QDockWidget):
         )
         self._transcript_view.setMinimumHeight(140)
         layout.addWidget(self._transcript_view)
-
-        # ── Visual separator ──────────────────────────────────────────────
-        layout.addWidget(self._make_sep())
-
-        # ── Spotify quick controls ────────────────────────────────────────
-        spotify_lbl = QLabel("🎵  Spotify")
-        spotify_lbl.setStyleSheet(f"color: {ACCENT}; font-weight: bold;")
-        layout.addWidget(spotify_lbl)
-
-        spotify_row = QHBoxLayout()
-        spotify_row.setSpacing(3)
-
-        self._spotify_search = QLineEdit()
-        self._spotify_search.setPlaceholderText("Search track / artist…")
-        self._spotify_search.setToolTip(
-            "Type a track or artist name and press Enter (or 🔍) to play.\n"
-            "Discord text commands: !play, !pause, !skip, !stop, !search"
-        )
-        self._spotify_search.returnPressed.connect(self._on_spotify_search)
-        spotify_row.addWidget(self._spotify_search)
-
-        for icon, action, tip in (
-            ("▶", "play",  "Play / resume"),
-            ("⏸", "pause", "Pause playback"),
-            ("⏭", "skip",  "Skip to next track"),
-        ):
-            btn = QPushButton(icon)
-            btn.setFixedWidth(32)
-            btn.setToolTip(tip)
-            btn.clicked.connect(
-                lambda _checked, a=action: self.spotify_command.emit(a, "")
-            )
-            spotify_row.addWidget(btn)
-
-        search_btn = QPushButton("🔍")
-        search_btn.setFixedWidth(32)
-        search_btn.setToolTip("Search and play")
-        search_btn.clicked.connect(self._on_spotify_search)
-        spotify_row.addWidget(search_btn)
-
-        layout.addLayout(spotify_row)
 
         self.setWidget(outer)
 
@@ -939,9 +1183,19 @@ class DiscordPanel(QDockWidget):
         self._worker.spotify_command.connect(
             lambda a, q: self.spotify_command.emit(a, q)
         )
+        self._worker.youtube_command.connect(
+            lambda a, q: self.youtube_command.emit(a, q)
+        )
+        self._worker.tidal_command.connect(
+            lambda a, q: self.tidal_command.emit(a, q)
+        )
+        self._worker.local_music_command.connect(
+            lambda a, q: self.local_music_command.emit(a, q)
+        )
 
-        # Scheduler signal forwarding
+        # Scheduler signal forwarding + reply-channel combo population
         self._worker.text_channels_updated.connect(self.text_channels_available)
+        self._worker.text_channels_updated.connect(self._on_text_channels_available)
         self._worker.poll_sent.connect(self.poll_sent_ok)
         self._worker.vote_updated.connect(self.vote_updated)
         self._worker.poll_error.connect(self.poll_error_sig)
@@ -1058,125 +1312,225 @@ class DiscordPanel(QDockWidget):
         self._transcript_view.append(line)
         self._save_btn.setEnabled(True)
 
-    def _on_command_detected(self, cmd_type: str, raw_text: str) -> None:
-        """Highlight wake-word commands in accent colour."""
-        display = f"[⚡ {cmd_type.upper()}] {raw_text[:100]}"
-        html = (
-            f'<span style="color:{ACCENT}; font-weight:bold;">'
-            f'{display}'
-            f'</span>'
+    def _on_command_detected(self, cmd_type: str, raw_text: str, persona: str) -> None:
+        """Display a persona-attributed, varied acknowledgement for every wake-word command."""
+        import re as _re
+
+        persona_key  = persona.lower()
+        display_name = PERSONA_DISPLAY.get(persona_key, persona.title())
+
+        # ── Syrinscape pattern detection ──────────────────────────────────────
+        # Check before the generic response so we can emit syrinscape_command
+        # and use a dedicated persona response pool.
+        _lower = raw_text.lower()
+        _syr_cmd_type: Optional[str] = None
+        _syr_query = ""
+
+        _play_match = _re.search(r'\bplay\s+(.+?)\s+mood\b', _lower)
+        if _play_match:
+            _syr_query     = _play_match.group(1).strip()
+            _syr_cmd_type  = "syrinscape_play"
+            self.syrinscape_command.emit("play_mood", _syr_query)
+        elif _re.search(r'\bstop\s+(music|syrinscape)\b', _lower):
+            _syr_cmd_type = "syrinscape_stop"
+            self.syrinscape_command.emit("stop", "")
+
+        # ── YouTube pattern detection ─────────────────────────────────────────
+        _yt_cmd_type: Optional[str] = None
+        _yt_query = ""
+
+        _yt_play_match = (
+            _re.search(r'\bplay\s+(.+?)\s+on\s+youtube\b', _lower)
+            or _re.search(r'\byoutube\s+play\s+(.+)', _lower)
         )
-        self._transcript_view.append(html)
-        self.status_message.emit(f"Discord voice cmd: {cmd_type}")
+        if _yt_play_match:
+            _yt_query    = _yt_play_match.group(1).strip()
+            _yt_cmd_type = "youtube_play"
+            self.youtube_command.emit("play", _yt_query)
+        elif _re.search(r'\b(stop|pause)\s+youtube\b', _lower):
+            _yt_cmd_type = "youtube_stop"
+            self.youtube_command.emit("stop", "")
+        elif _re.search(r'\byoutube\s+(stop|pause)\b', _lower):
+            _yt_cmd_type = "youtube_stop"
+            self.youtube_command.emit("stop", "")
+
+        # ── Tidal pattern detection ────────────────────────────────────────────
+        _td_cmd_type: Optional[str] = None
+        _td_query = ""
+
+        _td_play_match = (
+            _re.search(r'\bplay\s+(.+?)\s+on\s+tidal\b', _lower)
+            or _re.search(r'\btidal\s+play\s+(.+)', _lower)
+        )
+        if _td_play_match:
+            _td_query    = _td_play_match.group(1).strip()
+            _td_cmd_type = "tidal_play"
+            self.tidal_command.emit("play", _td_query)
+        elif _re.search(r'\b(stop|pause)\s+tidal\b', _lower):
+            _td_cmd_type = "tidal_stop"
+            self.tidal_command.emit("stop", "")
+        elif _re.search(r'\btidal\s+(stop|pause)\b', _lower):
+            _td_cmd_type = "tidal_stop"
+            self.tidal_command.emit("stop", "")
+
+        # ── Local Music pattern detection ──────────────────────────────────────
+        _lm_cmd_type: Optional[str] = None
+        _lm_query = ""
+
+        # Matches: "play <query> locally" / "local play <query>" / "play local <query>"
+        _lm_play_match = (
+            _re.search(r'\bplay\s+(.+?)\s+locally\b', _lower)
+            or _re.search(r'\blocal(?:ly)?\s+play\s+(.+)', _lower)
+            or _re.search(r'\bplay\s+local\s+(.+)', _lower)
+        )
+        if _lm_play_match:
+            _lm_query    = _lm_play_match.group(1).strip()
+            _lm_cmd_type = "local_play"
+            self.local_music_command.emit("play", _lm_query)
+        elif _re.search(r'\b(stop|pause)\s+local(?:\s+music)?\b', _lower):
+            _lm_cmd_type = "local_stop"
+            self.local_music_command.emit("stop", "")
+        elif _re.search(r'\blocal(?:\s+music)?\s+(stop|pause)\b', _lower):
+            _lm_cmd_type = "local_stop"
+            self.local_music_command.emit("stop", "")
+        elif _re.search(r'\bnext\s+(?:local\s+)?track\b', _lower):
+            self.local_music_command.emit("next", "")
+
+        # ── Build the acknowledgement line ──
+        if _lm_cmd_type:
+            pool = (
+                PERSONA_RESPONSES
+                .get(persona_key, PERSONA_RESPONSES["veras"])
+                .get(_lm_cmd_type, PERSONA_RESPONSES["veras"]["custom"])
+            )
+            ack = random.choice(pool).replace("{query}", _lm_query)
+        elif _td_cmd_type:
+            pool = (
+                PERSONA_RESPONSES
+                .get(persona_key, PERSONA_RESPONSES["veras"])
+                .get(_td_cmd_type, PERSONA_RESPONSES["veras"]["custom"])
+            )
+            ack = random.choice(pool).replace("{query}", _td_query)
+        elif _yt_cmd_type:
+            pool = (
+                PERSONA_RESPONSES
+                .get(persona_key, PERSONA_RESPONSES["veras"])
+                .get(_yt_cmd_type, PERSONA_RESPONSES["veras"]["custom"])
+            )
+            ack = random.choice(pool).replace("{query}", _yt_query)
+        elif _syr_cmd_type:
+            pool = (
+                PERSONA_RESPONSES
+                .get(persona_key, PERSONA_RESPONSES["veras"])
+                .get(_syr_cmd_type, PERSONA_RESPONSES["veras"]["custom"])
+            )
+            ack = random.choice(pool).replace("{query}", _syr_query)
+        else:
+            pool = (
+                PERSONA_RESPONSES
+                .get(persona_key, PERSONA_RESPONSES["veras"])
+                .get(cmd_type, PERSONA_RESPONSES["veras"]["custom"])
+            )
+            ack = random.choice(pool)
+
+        # ── Display acknowledgement in transcript view ─────────────────────────
+        ack_line = f"⚡ {display_name}: {ack}"
+        self._transcript_lines.append(ack_line)
+        self._transcript_view.append(
+            f'<span style="color:{ACCENT}; font-weight:bold;">{ack_line}</span>'
+        )
+        self.status_message.emit(f"{display_name}: {cmd_type}")
+
+    # ── Transcript save ────────────────────────────────────────────────────────
+
+    def _on_reply_channel_changed(self, index: int) -> None:
+        """Persist and forward the selected reply channel to the worker."""
+        channel_id = self._reply_channel_combo.itemData(index)
+        if channel_id is not None and self._worker:
+            self._reply_channel_id = int(channel_id)
+            self._worker.set_reply_channel(int(channel_id))
+            self._settings.setValue("discord/reply_channel", int(channel_id))
 
     def _clear_transcript(self) -> None:
+        """Clear the live transcript display and buffer."""
         self._transcript_lines.clear()
         self._transcript_view.clear()
         self._save_btn.setEnabled(False)
 
-    # ── Save transcript ────────────────────────────────────────────────────────
+    def _on_text_channels_available(self, channels: list) -> None:
+        """Populate the reply-channel combo when the bot fetches text channels."""
+        self._reply_channel_combo.blockSignals(True)
+        self._reply_channel_combo.clear()
+        saved_id = self._settings.value("discord/reply_channel", None)
+        restore_idx = 0
+        for i, (ch_id, ch_name) in enumerate(channels):
+            self._reply_channel_combo.addItem(f"#{ch_name}", userData=int(ch_id))
+            if saved_id is not None and int(ch_id) == int(saved_id):
+                restore_idx = i
+        if channels:
+            self._reply_channel_combo.setCurrentIndex(restore_idx)
+        self._reply_channel_combo.blockSignals(False)
 
     def _on_save_transcript(self) -> None:
+        """Save the accumulated transcript to the active Obsidian vault."""
         if not self._transcript_lines:
-            QMessageBox.information(self, "Nothing to Save", "Transcript is empty.")
             return
-
-        vault_path = self._get_vault_path()
-        if vault_path is None:
+        vault = getattr(self._config, "current_vault_path", None)
+        if not vault:
+            self.status_message.emit("Discord: no active vault — cannot save transcript")
             return
+        from pathlib import Path as _Path
+        from datetime import datetime as _dt
+        ts   = _dt.now().strftime("%Y-%m-%d_%H%M")
+        dest = _Path(vault) / "Sessions" / f"transcript_{ts}.md"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text("\n".join(self._transcript_lines), encoding="utf-8")
+        self.status_message.emit(f"Discord: transcript saved → {dest.name}")
 
-        ts = datetime.now().strftime("%Y-%m-%d_%H-%M")
-        dest_dir = vault_path / "Sessions" / "Transcripts"
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        out_path = dest_dir / f"Discord_Transcript_{ts}.md"
+    # ── Scheduler-facing public slots ─────────────────────────────────────────
 
-        word_count = sum(len(ln.split()) for ln in self._transcript_lines)
-        md_lines: List[str] = [
-            f"# Discord Session Transcript — {ts}",
-            "",
-            f"**Date:** {datetime.now().strftime('%Y-%m-%d')}  ",
-            f"**Lines:** {len(self._transcript_lines)}  ",
-            f"**Words (approx):** {word_count:,}  ",
-            "",
-            "---",
-            "",
-        ]
-        md_lines.extend(self._transcript_lines)
-        md_lines.append("")
-
-        try:
-            out_path.write_text("\n".join(md_lines), encoding="utf-8")
-            try:
-                display_path = str(out_path.relative_to(vault_path))
-            except ValueError:
-                display_path = str(out_path)
-            self.status_message.emit(f"Transcript saved: {out_path.name}")
-            QMessageBox.information(
-                self,
-                "Transcript Saved",
-                f"Saved to vault:\n{display_path}",
-            )
-        except Exception as exc:
-            QMessageBox.warning(self, "Save Error", str(exc))
-
-    def _get_vault_path(self) -> Optional[Path]:
-        if (
-            self._config
-            and getattr(self._config, "current_vault", None)
-            and self._config.current_vault in (getattr(self._config, "vaults", None) or {})
-        ):
-            return Path(self._config.vaults[self._config.current_vault])
-        QMessageBox.warning(
-            self,
-            "No Vault Selected",
-            "Select an Obsidian vault in the Vault / Notes panel first.",
-        )
-        return None
-
-    # ── Spotify ────────────────────────────────────────────────────────────────
-
-    def _on_spotify_search(self) -> None:
-        query = self._spotify_search.text().strip()
-        if query:
-            self.spotify_command.emit("play", query)
-            self._spotify_search.clear()
-
-    # ── Scheduler public API ───────────────────────────────────────────────────
-
+    @Slot()
     def request_text_channels(self) -> None:
-        """Ask the worker to emit the current guild's text channels."""
+        """Ask the worker to fetch the current server's text channels."""
         if self._worker:
             self._worker.list_text_channels()
 
-    def send_poll(
-        self,
-        channel_id: int,
-        options: List[Tuple[str, str]],
-        role_name: str,
-    ) -> None:
-        """Post a scheduling poll to *channel_id*. options = [(date, time), ...]."""
+    @Slot(int, list, str)
+    def send_poll(self, channel_id: int, options: list, role_name: str) -> None:
+        """Forward a scheduling poll to the Discord worker.
+
+        Args:
+            channel_id: Discord text channel ID for the poll.
+            options:    List of (date_label, time_label) tuples.
+            role_name:  Role to ping in the poll message.
+        """
         if self._worker:
             self._worker.post_poll(channel_id, options, role_name)
 
+    @Slot()
     def close_poll(self) -> None:
-        """Clear the active poll (no Discord message is deleted)."""
+        """Clear poll state in the Discord worker."""
         if self._worker:
             self._worker.close_poll()
 
-    def post_message_to_channel(self, channel_id: int, content: str) -> None:
-        """Send a plain text message to a text channel."""
+    @Slot(int, str)
+    def post_message_to_channel(self, channel_id: int, text: str) -> None:
+        """Post a plain-text message to a Discord text channel.
+
+        Args:
+            channel_id: Discord text channel ID.
+            text:       Message body.
+        """
         if self._worker:
-            self._worker.post_message(channel_id, content)
+            self._worker.post_message(channel_id, text)
 
-    # ── Cleanup ────────────────────────────────────────────────────────────────
+    # ── Lifecycle ──────────────────────────────────────────────────────────────
 
-    def closeEvent(self, event) -> None:   # type: ignore[override]
-        """Gracefully stop the bot and recording when the panel is closed."""
-        if self._recording and self._worker:
-            self._worker.stop_recording()
+    def closeEvent(self, event) -> None:  # type: ignore[override]
+        """Stop the Discord worker thread cleanly on panel close."""
         if self._worker:
             self._worker.stop()
-        if self._thread:
+        if self._thread and self._thread.isRunning():
             self._thread.quit()
-            self._thread.wait(3000)   # up to 3 s for clean asyncio shutdown
+            self._thread.wait(3000)
         super().closeEvent(event)

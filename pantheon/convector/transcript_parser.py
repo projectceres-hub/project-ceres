@@ -17,22 +17,22 @@ from .text_command_parser import parse_text_to_voice_command
 from .wake_words import find_wake_word_prefix
 
 
-def iter_vero_lines(lines: Iterable[str]) -> Iterable[str]:
+def iter_wake_word_lines(lines: Iterable[str]) -> Iterable[str]:
     """
     Yield lines that start with one of the configured wake words
     (e.g., "Veras" or "Chroma") after leading whitespace is stripped.
-    
+
     This function does not parse the commands; it only filters.
-    
+
     Args:
         lines: Iterable of text lines to filter
-        
+
     Yields:
         Lines that start with a configured wake word (case-insensitive) after
         stripping leading whitespace. The original line (with whitespace) is yielded.
-        
+
     Example:
-        >>> list(iter_vero_lines(["  Veras, add bookmark: test", "Regular line", "  chroma append note"]))
+        >>> list(iter_wake_word_lines(["  Veras, add bookmark: test", "Regular line", "  chroma append note"]))
         ['  Veras, add bookmark: test', '  chroma append note']
     """
     for line in lines:
@@ -60,7 +60,7 @@ def extract_voice_commands_from_transcript_text(text: str) -> list[VoiceCommand]
         - Each matching line is parsed into a VoiceCommand
     """
     lines = text.splitlines()
-    vero_lines = iter_vero_lines(lines)
+    vero_lines = iter_wake_word_lines(lines)
     
     commands: list[VoiceCommand] = []
     for line in vero_lines:

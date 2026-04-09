@@ -89,7 +89,7 @@ class FGUPanel(QDockWidget):
         run_command: Callable,
         parent: Optional[QWidget] = None,
     ) -> None:
-        super().__init__("🐉  Fantasy Grounds", parent)
+        super().__init__("Fantasy Grounds", parent)
         self.setObjectName("FGUPanel")
         self.setAllowedAreas(Qt.DockWidgetArea.AllDockWidgetAreas)  # type: ignore[attr-defined]
         self.setFeatures(

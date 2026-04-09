@@ -5,12 +5,19 @@ This domain handles note creation and seeding - planting new content in the
 vault from templates, generating initial NPC/session/location notes, and
 seeding structured information into campaigns.
 
-Status: Scaffold — implementation pending.
-Note creation currently lives in core/notes.py (cmd_createnote).
-Future work should migrate that logic here and export it from this module.
+Public API exports from the note_creator module.
 """
 
-# This domain is not yet implemented.
-# Attempting to import specific symbols will raise ImportError with a clear message.
+from .note_creator import (
+    NoteSpec,
+    create_note,
+    safe_filename,
+    resolve_unique_path,
+)
 
-__all__ = []
+__all__ = [
+    "NoteSpec",
+    "create_note",
+    "safe_filename",
+    "resolve_unique_path",
+]

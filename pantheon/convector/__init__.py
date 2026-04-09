@@ -33,7 +33,7 @@ from .voice_processor import (
 )
 from .text_command_parser import parse_text_to_voice_command
 from .transcript_parser import (
-    iter_vero_lines,
+    iter_wake_word_lines,
     extract_voice_commands_from_transcript_text,
     extract_voice_commands_from_transcript_file,
     enqueue_voice_commands,
@@ -70,7 +70,7 @@ __all__ = [
     "get_processed_dir",
     "iter_voice_command_files",
     "parse_text_to_voice_command",
-    "iter_vero_lines",
+    "iter_wake_word_lines",
     "extract_voice_commands_from_transcript_text",
     "extract_voice_commands_from_transcript_file",
     "enqueue_voice_commands",

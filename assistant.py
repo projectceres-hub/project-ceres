@@ -12,9 +12,10 @@ import os
 import json
 from pathlib import Path
 from core.config import Config
+from core.errors import install_error_handler, guarded_main
 from core.gpt import cmd_gptwrite, cmd_editnote, create_gpt_client
 from core.notes import cmd_read, cmd_list, cmd_send, list_md_files, read_md_file, cmd_createnote, cmd_tree
-from core.templates import cmd_showtemplates, cmd_createtemplate, cmd_deletetemplate, cmd_uploadalltemplates, cmd_uploadtemplate
+from pantheon.reparator import cmd_showtemplates, cmd_createtemplate, cmd_deletetemplate, cmd_uploadalltemplates, cmd_uploadtemplate
 from core.vaults import (
     add_vault,
     list_vaults,
@@ -44,13 +45,18 @@ except Exception:
             from prompt_toolkit.enums import CompleteStyle
         except Exception:
             CompleteStyle = None  # Fallback if not found
-from core.search_index import cmd_search, build_search_index
-from core.srd_index import cmd_srd_index, cmd_search_srd
-from core.pdf import convert_pdf_to_md
-from core.session_scheduler import schedule_next_session
+from pantheon.occator import cmd_search, build_search_index, cmd_srd_index, cmd_search_srd
+from pantheon.imporcitor import convert_pdf_to_md
+from pantheon.promitor import (
+    schedule_next_session,
+    plan_session_interactively,
+    build_session_event_package_from_scheduler,
+)
+from pantheon.convector import write_session_event_json
+from pathlib import Path
 from core.scheduler import Scheduler, register_default_jobs
-from core.history import HistoryManager
-from core.tags import get_tags_for_note, add_tag, remove_tag, list_all_tags, get_all_tags
+from pantheon.conditor import HistoryManager
+from pantheon.obarator import get_tags_for_note, add_tag, remove_tag, list_all_tags, get_all_tags
 from typing import Callable, Dict, List, Optional, Any, Tuple
 import yaml
 import shlex
@@ -81,21 +87,42 @@ ERRORS: Dict[str, str] = {
 class SchedulerContext:
     """
     Context object for scheduler jobs containing necessary dependencies.
-    
+
+    Holds a live reference to the Config object so that vault state is always
+    current — even after the user runs addvault, switch, or ignorevault.
+
     Attributes:
         obsidian_json_path: Path to Obsidian configuration file
-        vaults: Dictionary mapping vault names to paths
-        ignored_vaults: List of ignored vault names
+        config: Live Config reference (use config.vaults / config.current_vault
+                instead of the old snapshot copies)
         save_vaults: Callable to save vaults dictionary
-        current_vault: Name of the current active vault
     """
     def __init__(self) -> None:
         """Initialize scheduler context with empty values."""
         self.obsidian_json_path: str = ""
-        self.vaults: Dict[str, str] = {}
-        self.ignored_vaults: List[str] = []
+        self.config: Optional["Config"] = None
         self.save_vaults: Optional[Callable[[Dict[str, str]], None]] = None
-        self.current_vault: Optional[str] = None
+
+    # ---------------------------------------------------------------------------
+    # Convenience properties that read live from config so callers that still
+    # use the old attribute names (context.vaults, context.current_vault, etc.)
+    # continue to work correctly without any changes.
+    # ---------------------------------------------------------------------------
+
+    @property
+    def vaults(self) -> Dict[str, str]:
+        """Live vault map from config."""
+        return self.config.vaults if self.config is not None else {}
+
+    @property
+    def ignored_vaults(self) -> List[str]:
+        """Live ignored-vaults list from config."""
+        return self.config.ignored_vaults if self.config is not None else []
+
+    @property
+    def current_vault(self) -> Optional[str]:
+        """Live current vault from config."""
+        return self.config.current_vault if self.config is not None else None
 
 
 def create_save_vaults_wrapper(config: Config) -> Callable[[Dict[str, str]], None]:
@@ -206,6 +233,108 @@ def get_tag_completions(config: Config) -> List[str]:
         return []
 
 
+def get_path_completions(
+    config: Config,
+    partial_path: str,
+    include_files: bool = True
+) -> List[str]:
+    """
+    Get path completions for a partial path within the current vault.
+    
+    Lists directories (with trailing '/') and optionally markdown files
+    at the specified path level. Supports subdirectory traversal.
+    
+    Args:
+        config: Configuration object
+        partial_path: Partial path typed by user (e.g., "folder1/" or "folder1/sub")
+        include_files: If True, include .md files; if False, only directories
+        
+    Returns:
+        List of completion strings (directories with '/', files without)
+    """
+    if not config.current_vault or config.current_vault not in config.vaults:
+        return []
+    
+    vault_path = Path(config.vaults[config.current_vault])
+    if not vault_path.exists() or not vault_path.is_dir():
+        return []
+    
+    # Resolve the base directory to list
+    try:
+        # Normalize path separators
+        partial_path = partial_path.replace("\\", "/")
+        # Remove leading slashes
+        clean_path = partial_path.lstrip("/")
+        
+        # Determine base directory and prefix for completions
+        if clean_path:
+            # Split path into components
+            path_parts = clean_path.split("/")
+            # Filter out empty parts (from trailing slashes)
+            path_parts = [p for p in path_parts if p]
+            
+            if path_parts:
+                # Build path incrementally to find the deepest existing directory
+                search_dir = vault_path
+                prefix_parts = []
+                remaining_partial = None
+                
+                for i, part in enumerate(path_parts):
+                    test_dir = search_dir / part
+                    if test_dir.is_dir():
+                        # This part is a complete directory, continue deeper
+                        search_dir = test_dir
+                        prefix_parts.append(part)
+                    else:
+                        # This part is not a complete directory - might be partial match
+                        # Remaining path (including this part) is what we need to match
+                        remaining_partial = "/".join(path_parts[i:])
+                        break
+                
+                # Determine prefix for completions
+                if prefix_parts:
+                    prefix = "/".join(prefix_parts) + "/"
+                else:
+                    prefix = ""
+            else:
+                # Only slashes (e.g., "/" or "//"), list vault root
+                search_dir = vault_path
+                prefix = ""
+                remaining_partial = None
+        else:
+            # No path typed, list vault root
+            search_dir = vault_path
+            prefix = ""
+            remaining_partial = None
+        
+        # List contents of the directory
+        completions: List[str] = []
+        if not search_dir.exists() or not search_dir.is_dir():
+            return []
+        
+        for item in os.listdir(search_dir):
+            item_path = search_dir / item
+            # Skip hidden files/directories
+            if item.startswith("."):
+                continue
+            
+            # If we have a remaining partial match, filter by it
+            if remaining_partial:
+                if not item.lower().startswith(remaining_partial.lower()):
+                    continue
+            
+            if item_path.is_dir():
+                # Directory: add with trailing '/'
+                completions.append(prefix + item + "/")
+            elif include_files and item_path.is_file() and item.endswith(".md"):
+                # Markdown file: add without trailing slash
+                completions.append(prefix + item)
+    except (OSError, ValueError, PermissionError):
+        return []
+    
+    return sorted(completions)
+
+
 class ContextAwareCompleter(Completer):
     """
     Context-aware completer for command-line autocompletion.
@@ -213,6 +342,7 @@ class ContextAwareCompleter(Completer):
     Handles special cases for tag commands with argument-position-aware completion:
     - tag-add and tag-remove: note names for arg 2, tags for arg 3
     - tag-notes: tags for arg 2
+    - Commands expecting paths: pdf-batch, pdf-send-to-vault, uploadalltemplates, uploadtemplate
     - Other commands: use nested completer behavior
     """
     
@@ -255,13 +385,36 @@ class ContextAwareCompleter(Completer):
         text = document.text_before_cursor
         parts = text.strip().split()
         
-        # If no text, use base completer for command names
+        # If no text, show command name completions with descriptions
         if not parts:
-            yield from self.base_completer.get_completions(document, complete_event)
+            # Get current text being typed
+            current_text = document.text_before_cursor.strip().lower()
+            # Yield command completions with descriptions
+            for cmd_name, (handler, description) in self.config.commands.items():
+                if cmd_name.lower().startswith(current_text):
+                    yield Completion(
+                        cmd_name,
+                        start_position=-len(current_text),
+                        display_meta=description or ""
+                    )
             return
         
-        cmd_name = parts[0].lower()
+        cmd_name = parts[0].lower() if parts else ""
         arg_count = len(parts) - 1  # Number of arguments after command (including partial)
+        
+        # Check if the typed command name is a valid registered command
+        # If not, user is typing a partial/invalid command name, show completions
+        if arg_count == 0 and cmd_name not in self.config.commands:
+            # User is typing a command name (possibly partial), show command completions with descriptions
+            current_text = document.text_before_cursor.strip()
+            for cmd_name_match, (handler, description) in self.config.commands.items():
+                if cmd_name_match.lower().startswith(current_text.lower()):
+                    yield Completion(
+                        cmd_name_match,
+                        start_position=-len(current_text),
+                        display_meta=description or ""
+                    )
+            return
         
         # Get the current word being typed (may be partial)
         current_word = ""
@@ -299,8 +452,15 @@ class ContextAwareCompleter(Completer):
             else:
                 # Too many arguments or command only, no completion
                 if arg_count == 0:
-                    # Just the command, use base completer
-                    yield from self.base_completer.get_completions(document, complete_event)
+                    # Just the command name, show command completions with descriptions
+                    current_text = document.text_before_cursor.strip()
+                    for cmd_name_match, (handler, description) in self.config.commands.items():
+                        if cmd_name_match.lower().startswith(current_text.lower()):
+                            yield Completion(
+                                cmd_name_match,
+                                start_position=-len(current_text),
+                                display_meta=description or ""
+                            )
                 return
         elif cmd_name == "tag-notes":
             if arg_count == 1:
@@ -317,11 +477,50 @@ class ContextAwareCompleter(Completer):
             else:
                 # Too many arguments or command only, no completion
                 if arg_count == 0:
-                    # Just the command, use base completer
-                    yield from self.base_completer.get_completions(document, complete_event)
+                    # Just the command name, show command completions with descriptions
+                    current_text = document.text_before_cursor.strip().lower()
+                    for cmd_name, (handler, description) in self.config.commands.items():
+                        if cmd_name.lower().startswith(current_text):
+                            yield Completion(
+                                cmd_name,
+                                start_position=-len(current_text),
+                                display_meta=description or ""
+                            )
                 return
+        # Path completion commands
+        elif cmd_name in ("uploadalltemplates",):
+            if arg_count == 1:
+                # First argument: folder path (directories only)
+                partial_path = current_word if len(parts) > 1 else ""
+                completions = get_path_completions(self.config, partial_path, include_files=False)
+                for comp in completions:
+                    # get_path_completions already handles partial matching, just yield results
+                    yield Completion(comp, start_position=-len(partial_path))
+                return
+        elif cmd_name == "uploadtemplate":
+            if arg_count == 1:
+                # First argument: markdown file path (directories and .md files)
+                partial_path = current_word if len(parts) > 1 else ""
+                completions = get_path_completions(self.config, partial_path, include_files=True)
+                for comp in completions:
+                    # get_path_completions already handles partial matching, just yield results
+                    yield Completion(comp, start_position=-len(partial_path))
+                return
+        elif cmd_name == "pdf-send-to-vault":
+            # Special handling: path comes after --input flag
+            # Check if we're completing the path after --input
+            if arg_count >= 2:
+                # Check if the previous argument was --input
+                if len(parts) >= 2 and parts[1].lower() == "--input":
+                    # Second argument after --input: path (directories and files)
+                    partial_path = current_word if len(parts) > 2 else ""
+                    completions = get_path_completions(self.config, partial_path, include_files=True)
+                    for comp in completions:
+                        # get_path_completions already handles partial matching, just yield results
+                        yield Completion(comp, start_position=-len(partial_path))
+                    return
         else:
-            # For other commands, use base completer
+            # For other commands, use base completer for nested completions
             yield from self.base_completer.get_completions(document, complete_event)
 
 def build_completer(config: Config, error_func: Callable[[str, ...], None]) -> Completer:
@@ -420,6 +619,55 @@ def cmd_exit(args: str) -> None:
         args: Command arguments (unused)
     """
     exit()
+
+
+def cmd_session_discord_export(prompt_input_func) -> None:
+    """
+    Command handler for session-discord-export.
+    
+    Interactively schedules a session and exports it as a Discord-ready JSON package
+    (includes .ics file reference).
+    
+    Args:
+        prompt_input_func: Function to get user input (takes prompt string, returns response)
+    """
+    # Use the common interactive planning helper
+    result = plan_session_interactively(prompt_input_func)
+    if result is None:
+        return
+    
+    info, ics_path, message_text = result
+    
+    # Build SessionEventPackage using Promitor + Convector
+    pkg = build_session_event_package_from_scheduler(
+        info=info,
+        ics_path=ics_path,
+        message_text=message_text,
+        google_calendar_url=None,  # Can be added later if needed
+    )
+    
+    # Choose output path for JSON file
+    exports_dir = Path("exports")
+    json_path = exports_dir / "session_event.json"
+    
+    # Write JSON file using Convector
+    try:
+        write_session_event_json(pkg, json_path)
+    except Exception as e:
+        print(f"\nError: Failed to write JSON file: {e}")
+        print(f"Hint: Check that '{exports_dir}' is writable.")
+        return
+    
+    # Print friendly summary
+    print("\n" + "-" * 60)
+    print("Session event exported for Discord helper.")
+    print("-" * 60)
+    print(f"\nICS file:   {ics_path.resolve()}")
+    print(f"JSON file:  {json_path.resolve()}")
+    print("\nYou can now run your Discord bot helper and point it at the JSON")
+    print("+ ICS to post this session to a channel.")
+    print("-" * 60)
+
 
 def cmd_help(args: str, config: Config) -> None:
     """
@@ -550,14 +798,16 @@ def cmd_history_list(
     if note_path is None:
         return
     
-    # Get history entries
-    entries = history_manager.list_history(note_path, limit=limit)
-    
+    # Fetch all entries to get the true total, then slice to the requested limit.
+    all_entries = history_manager.list_history(note_path, limit=9999)
+    total = len(all_entries)
+    entries = all_entries[:limit]
+
     if not entries:
         print(f"No history found for note: {note_name}")
         return
-    
-    print(f"\nHistory for '{note_name}' (showing {len(entries)} of {len(entries)} entries):\n")
+
+    print(f"\nHistory for '{note_name}' (showing {len(entries)} of {total} entries):\n")
     print("=" * 80)
     
     for i, entry in enumerate(entries, 1):
@@ -996,7 +1246,7 @@ def cmd_pdf2md(args: str, config: Config, prompt_input_func: Callable[[str], str
     if not out_dir:
         return
 
-    from core.pdf import convert_pdf_to_md
+    from pantheon.imporcitor import convert_pdf_to_md
 
     rules = {}
     if os.path.isfile(map_path):
@@ -1079,7 +1329,7 @@ def cmd_pdfbatch(args: str, config: Config) -> None:
     if not out_dir:
         return
 
-    from core.pdf import convert_pdf_to_md
+    from pantheon.imporcitor import convert_pdf_to_md
 
     rules = {}
     if os.path.isfile(map_path):
@@ -1139,7 +1389,7 @@ def cmd_pdf_convert(args: str, config: Config, prompt_input_func: Callable[[str]
         prompt_input_func: Function to get user input
     """
     from pathlib import Path
-    from pdf_tools.pdf_to_md import convert_pdf_to_md
+    from pantheon.imporcitor.pdf_tools import convert_pdf_to_md
     
     parts = shlex.split(args)
     if len(parts) < 1:
@@ -1235,7 +1485,7 @@ def cmd_pdf_batch(args: str, config: Config) -> None:
         config: Configuration object
     """
     from pathlib import Path
-    from pdf_tools.pdf_to_md import convert_pdf_to_md
+    from pantheon.imporcitor.pdf_tools import convert_pdf_to_md
     
     parts = shlex.split(args)
     if len(parts) < 1:
@@ -1346,8 +1596,7 @@ def cmd_pdf_send_to_vault(args: str, config: Config) -> None:
         config: Configuration object
     """
     from pathlib import Path
-    from pdf_tools.pdf_to_md import convert_pdf_to_md, send_md_to_obsidian
-    from pdf_tools.cleaning import clean_markdown
+    from pantheon.imporcitor.pdf_tools import convert_pdf_to_md, send_md_to_obsidian, clean_markdown
     
     parts = shlex.split(args)
     
@@ -1571,7 +1820,7 @@ def cmd_schedule_backup_run_now(args: str, config: Config) -> None:
         args: Command arguments (unused)
         config: Config object containing vault information
     """
-    from automation.jobs import backup_vault
+    from pantheon.serritor import backup_vault
     
     try:
         print("Running vault backup...")
@@ -1599,7 +1848,7 @@ def cmd_template_sync_now(args: str, config: Config) -> None:
         args: Command arguments (unused)
         config: Config object containing template sync configuration
     """
-    from automation.jobs import sync_templates_job
+    from pantheon.serritor import sync_templates_job
     
     try:
         print("Running template sync...")
@@ -1628,7 +1877,7 @@ def cmd_srd_index_run_now(args: str, config: Config) -> None:
         args: Command arguments (unused)
         config: Config object containing vault information
     """
-    from automation.jobs import rebuild_srd_index_job
+    from pantheon.serritor import rebuild_srd_index_job
     
     try:
         print("Running SRD index rebuild...")
@@ -1657,7 +1906,7 @@ def cmd_cache_clean_now(args: str, config: Config) -> None:
         args: Command arguments (unused)
         config: Config object containing vault information
     """
-    from automation.jobs import clean_cache_job
+    from pantheon.serritor import clean_cache_job
     
     try:
         print("Running cache cleanup...")
@@ -1683,7 +1932,7 @@ def cmd_campaign_create(args: str, config: Config) -> None:
         args: Campaign name
         config: Config object containing vault information
     """
-    from core.campaigns import create_campaign
+    from pantheon.vervactor import create_campaign
     
     if not args.strip():
         print("Usage: campaign-create <name>")
@@ -1715,7 +1964,7 @@ def cmd_campaign_add_pc(args: str, config: Config) -> None:
         args: Campaign name and character name (space-separated)
         config: Config object containing vault information
     """
-    from core.campaigns import find_campaign, create_party_member
+    from pantheon.vervactor import find_campaign, create_party_member
     
     parts = args.strip().split(None, 1)
     if len(parts) < 2:
@@ -1758,7 +2007,7 @@ def cmd_campaign_add_npc(args: str, config: Config) -> None:
         args: Campaign name, attitude, and character name (space-separated)
         config: Config object containing vault information
     """
-    from core.campaigns import find_campaign, create_npc
+    from pantheon.vervactor import find_campaign, create_npc
     
     parts = args.strip().split(None, 2)
     if len(parts) < 3:
@@ -1777,8 +2026,12 @@ def cmd_campaign_add_npc(args: str, config: Config) -> None:
             print(f"Error: Campaign '{campaign_name}' not found")
             return
         
-        create_npc(campaign, character_name, attitude, config)
+        npc_file, tag_added = create_npc(campaign, character_name, attitude, config)
         print(f"NPC '{character_name}' added to campaign '{campaign_name}' as {attitude}")
+        # Only print tag success message if tag was actually added
+        if tag_added:
+            attitude_tag = attitude.strip().lower().capitalize()
+            print(f"Tag #{attitude_tag} automatically added to NPC file.")
     except ValueError as e:
         print(f"Error: {e}")
     except PermissionError as e:
@@ -1801,7 +2054,7 @@ def cmd_campaign_add_location(args: str, config: Config) -> None:
         args: Campaign name and location name (space-separated)
         config: Config object containing vault information
     """
-    from core.campaigns import find_campaign, create_location
+    from pantheon.vervactor import find_campaign, create_location
     
     parts = args.strip().split(None, 1)
     if len(parts) < 2:
@@ -1832,6 +2085,70 @@ def cmd_campaign_add_location(args: str, config: Config) -> None:
         print(f"Error: Unexpected error: {e}")
 
 
+def cmd_fgu_import_log(args: str, config: Config) -> None:
+    """
+    Import a Fantasy Grounds chat log and attach it to a session note.
+    
+    Usage: fgu-import-log <campaign> <session> <log_path>
+    
+    Args:
+        args: Campaign name, session identifier, and log file path (space-separated)
+        config: Config object containing vault information
+    """
+    from pantheon.messor import attach_fgu_log_to_session, parse_fgu_chat_log
+    from pathlib import Path
+    
+    parts = args.strip().split(None, 2)
+    if len(parts) < 3:
+        print("Usage: fgu-import-log <campaign> <session> <log_path>")
+        print("Example: fgu-import-log \"The Lost Mines\" \"003\" \"C:/FGU/logs/chat.log\"")
+        print("Session can be: session number (e.g., \"003\"), \"Session-003\", or exact filename")
+        return
+    
+    campaign_name = parts[0]
+    session_identifier = parts[1]
+    log_path_str = parts[2]
+    
+    # Resolve log path
+    log_path = Path(log_path_str).expanduser().resolve()
+    
+    if not log_path.exists():
+        print(f"Error: Log file not found: {log_path}")
+        return
+    
+    try:
+        # Parse log first to get event count
+        events = parse_fgu_chat_log(log_path)
+        roll_count = sum(1 for e in events if e.is_roll)
+        
+        # Attach to session
+        session_file = attach_fgu_log_to_session(
+            campaign_name,
+            session_identifier,
+            log_path,
+            config
+        )
+        
+        print(f"FGU log imported successfully!")
+        print(f"  Session: {session_file.name}")
+        print(f"  Events imported: {len(events)}")
+        print(f"  Dice rolls: {roll_count}")
+        print(f"  Regular messages: {len(events) - roll_count}")
+        
+    except ValueError as e:
+        print(f"Error: {e}")
+    except FileNotFoundError as e:
+        print(f"Error: File not found: {e}")
+    except PermissionError as e:
+        print(f"Error: Permission denied: {e}")
+        print("Hint: Check that you have read permissions for the log file and write permissions for the session note.")
+    except OSError as e:
+        print(f"Error: Failed to import log: {e}")
+        print("Hint: Check that the log file is readable and the session note is writable.")
+    except Exception as e:
+        print(f"Error: Unexpected error: {e}")
+
+
 def cmd_session_create(args: str, config: Config) -> None:
     """
     Create a new session note for a campaign.
@@ -1846,7 +2163,7 @@ def cmd_session_create(args: str, config: Config) -> None:
         args: Campaign name and session title (space-separated, title in quotes recommended)
         config: Config object containing vault information
     """
-    from core.campaigns import find_campaign, create_session
+    from pantheon.vervactor import find_campaign, create_session
     
     if not args.strip():
         print("Usage: session-create <campaign> \"<session title>\"")
@@ -1904,7 +2221,7 @@ def cmd_template_preview(args: str, config: Config) -> None:
         args: Template name and optional variable assignments (space-separated)
         config: Config object containing vault information
     """
-    from core.templates import apply_template_preview
+    from pantheon.reparator import apply_template_preview
     import shlex
     
     if not args.strip():
@@ -1967,7 +2284,7 @@ def cmd_session_reminder_run_now(args: str, config: Config) -> None:
         args: Command arguments (unused)
         config: Config object containing session reminder configuration
     """
-    from automation.jobs import session_reminder_job
+    from pantheon.serritor import session_reminder_job
     
     try:
         print("Checking for upcoming sessions...")
@@ -1982,6 +2299,302 @@ def cmd_session_reminder_run_now(args: str, config: Config) -> None:
         print("Hint: Check that the exports directory exists and is accessible.")
     except Exception as e:
         print(f"Error: Unexpected error during session reminder check: {e}")
+
+
+def cmd_snapshot_run_now(args: str, config: Config) -> None:
+    """
+    Run the daily snapshot job immediately.
+    
+    Executes the daily_snapshot_job function synchronously without waiting for
+    the scheduled interval.
+    
+    Args:
+        args: Command arguments (unused)
+        config: Config object containing vault information
+    """
+    from pantheon.serritor import daily_snapshot_job
+    
+    try:
+        print("Running daily snapshot...")
+        daily_snapshot_job(config)
+    except ValueError as e:
+        print(f"Error: Cannot create snapshot: {e}")
+    except PermissionError as e:
+        print(f"Error: Permission denied during snapshot: {e}")
+        print("Hint: Check that you have read permissions for the vault and write permissions for the snapshots directory.")
+    except OSError as e:
+        print(f"Error: Failed to create snapshot: {e}")
+        print("Hint: Check that the vault directory exists and the snapshots directory is writable.")
+    except Exception as e:
+        print(f"Error: Unexpected error during snapshot: {e}")
+
+
+def cmd_voice_enable(args: str, config: Config) -> None:
+    """
+    Enable voice commands for this installation.
+    
+    This sets config.voice_commands_enabled = True and persists
+    the change to settings.json.
+    
+    Args:
+        args: Command arguments (unused)
+        config: Configuration object
+    """
+    config.voice_commands_enabled = True
+    config.save_settings()
+    print("Voice commands have been ENABLED.")
+
+
+def cmd_voice_disable(args: str, config: Config) -> None:
+    """
+    Disable voice commands for this installation.
+    
+    This sets config.voice_commands_enabled = False and persists
+    the change to settings.json.
+    
+    Args:
+        args: Command arguments (unused)
+        config: Configuration object
+    """
+    config.voice_commands_enabled = False
+    config.save_settings()
+    print("Voice commands have been DISABLED.")
+
+
+def cmd_voice_status(args: str, config: Config) -> None:
+    """
+    Show whether voice commands are currently enabled or disabled.
+    
+    Args:
+        args: Command arguments (unused)
+        config: Configuration object
+    """
+    state = "ENABLED" if config.voice_commands_enabled else "DISABLED"
+    print(f"Voice commands are currently: {state}")
+
+
+def cmd_voice_command(args: str, config: Config) -> None:
+    """
+    Parse a text command into a VoiceCommand and write it to the inbox.
+    
+    Usage: voice-command <text>
+    
+    Args:
+        args: Command text to parse (e.g., "Veras, add bookmark: dragon lands")
+        config: Configuration object
+        
+    Note:
+        The wake words are 'Veras' and 'Chroma' (case-insensitive).
+    """
+    from pantheon.convector import (
+        parse_text_to_voice_command,
+        write_voice_command_to_inbox,
+    )
+    
+    text = args.strip()
+    if not text:
+        print("Error: No command text provided.")
+        print("Usage: voice-command <text>")
+        print('Example: voice-command "Veras, add bookmark: dragon lands on the tower"')
+        return
+    
+    cmd = parse_text_to_voice_command(text)
+    path = write_voice_command_to_inbox(cmd)
+    print(f"Voice command queued: {path}")
+
+
+def cmd_voice_commands_from_transcript(args: str, config: Config) -> None:
+    """
+    Read a transcript text file, extract all lines that start with the
+    wake words "Veras" or "Chroma", parse them into VoiceCommands, and
+    enqueue those commands into the Convector inbox.
+    
+    Usage:
+        voice-commands-from-transcript <path>
+    
+    Args:
+        args: Path to the transcript file
+        config: Configuration object
+        
+    Note:
+        This command does NOT execute the commands. Use
+        'voice-commands-process' afterwards to apply them.
+        This command respects config.voice_commands_enabled.
+    """
+    from pathlib import Path
+    from pantheon.convector import transcript_to_inbox_from_file
+    
+    if not config.voice_commands_enabled:
+        print("Voice commands are currently DISABLED.")
+        print("Use 'voice-enable' to enable them before running this command.")
+        return
+    
+    raw = args.strip()
+    if not raw:
+        print("Error: No transcript path provided.")
+        print("Usage: voice-commands-from-transcript <path>")
+        return
+    
+    path = Path(raw)
+    if not path.exists():
+        print(f"Error: Transcript file not found: {path}")
+        return
+    
+    inbox_paths = transcript_to_inbox_from_file(path)
+    if not inbox_paths:
+        print("No Veras/Chroma commands found in transcript.")
+        return
+    
+    print("Enqueued voice commands from transcript:")
+    for p in inbox_paths:
+        print(f"  - {p}")
+
+
+def cmd_voice_commands_from_audio(args: str, config: Config) -> None:
+    """
+    Read an audio file, transcribe it, extract all lines that start
+    with one of the configured wake words ("Veras", "Chroma"), and
+    enqueue those commands into the Convector inbox.
+    
+    Usage:
+        voice-commands-from-audio <path>
+    
+    Args:
+        args: Path to the audio file
+        config: Configuration object
+        
+    Note:
+        - This command respects config.voice_commands_enabled.
+        - If voice commands are disabled, it will refuse to run and
+          explain how to enable them.
+    """
+    from pathlib import Path
+    from pantheon.convector import audio_file_to_inbox
+    
+    if not config.voice_commands_enabled:
+        print("Voice commands are currently DISABLED.")
+        print("Use 'voice-enable' to enable them before running this command.")
+        return
+    
+    raw = args.strip()
+    if not raw:
+        print("Error: No audio file path provided.")
+        print("Usage: voice-commands-from-audio <path>")
+        return
+    
+    path = Path(raw)
+    if not path.exists():
+        print(f"Error: Audio file not found: {path}")
+        return
+    
+    inbox_paths = audio_file_to_inbox(path)
+    if not inbox_paths:
+        print("No wake-word commands (Veras/Chroma) found in this audio.")
+        return
+    
+    print("Enqueued voice commands from audio:")
+    for p in inbox_paths:
+        print(f"  - {p}")
+
+
+def cmd_session_audio_ingest(args: str, config: Config) -> None:
+    """
+    Attach an audio recording to a specific session, transcribe it,
+    attach the transcript to the session note, and extract wake-word
+    VoiceCommands (Veras/Chroma) into the inbox.
+    
+    Usage:
+        session-audio-ingest "<campaign_name>" "<session_name>" <audio_path>
+    
+    Args:
+        args: Command-line arguments as a single string
+        config: Configuration object
+        
+    Note:
+        - Respects config.voice_commands_enabled. If disabled,
+          this command will refuse to run and tell the user to
+          enable voice commands first.
+    """
+    from pathlib import Path
+    from pantheon.messor import attach_audio_and_extract_commands_for_session
+    
+    if not config.voice_commands_enabled:
+        print("Voice commands are currently DISABLED.")
+        print("Use 'voice-enable' to enable them before running this command.")
+        return
+    
+    # Basic parsing:
+    # Expect: "<campaign_name>" "<session_name>" <audio_path>
+    # Use shlex.split so quoted names and paths with spaces are handled correctly.
+    try:
+        parts = shlex.split(args.strip())
+    except ValueError as e:
+        print(f"Error: Could not parse arguments: {e}")
+        print('Usage: session-audio-ingest "<campaign_name>" "<session_name>" <audio_path>')
+        return
+    if len(parts) < 3:
+        print("Error: Missing arguments.")
+        print('Usage: session-audio-ingest "<campaign_name>" "<session_name>" <audio_path>')
+        return
+
+    campaign_name = parts[0]
+    session_name = parts[1]
+    audio_path = Path(parts[2])
+    
+    if not audio_path.exists():
+        print(f"Error: Audio file not found: {audio_path}")
+        return
+    
+    inbox_paths = attach_audio_and_extract_commands_for_session(
+        campaign_name=campaign_name,
+        session_name=session_name,
+        audio_path=audio_path,
+        config=config,
+    )
+    
+    if not inbox_paths:
+        print("No wake-word commands (Veras/Chroma) found in this audio.")
+        print("Transcript was still attached to the session note.")
+        return
+    
+    print("Transcript attached; enqueued voice commands from session audio:")
+    for p in inbox_paths:
+        print(f"  - {p}")
+    print("Use 'voice-commands-process' to apply them.")
+
+
+def cmd_voice_commands_process(args: str, config: Config) -> None:
+    """
+    Process all queued VoiceCommand files in the inbox.
+    
+    Usage: voice-commands-process [--dry-run]
+    
+    Args:
+        args: Command arguments (optional --dry-run flag)
+        config: Configuration object
+    """
+    from pantheon.convector import process_all_voice_commands
+    
+    # Check for --dry-run flag
+    dry_run = args.strip() == "--dry-run"
+    
+    summaries = process_all_voice_commands(
+        config=config,
+        move_on_success=not dry_run,
+    )
+    
+    if not summaries:
+        print("No voice commands found in inbox.")
+        return
+    
+    print("Processed voice commands:")
+    print("------------------------------------------------------------")
+    for line in summaries:
+        print(line)
+    print("------------------------------------------------------------")
+    
+    if dry_run:
+        print("(Dry run only – no files were moved.)")
 
 
 def cmd_debug(args: str, config: Config, gpt_client) -> None:
@@ -2078,7 +2691,12 @@ def initialize_application() -> Tuple[Config, Any, Scheduler, SchedulerContext, 
     config = Config()
     config.vaults = load_vaults()
     config.load_settings()
-    
+
+    # Wire the CLI input provider.  The UI layer swaps this for its own
+    # implementation (dialog box, async queue, etc.) before calling
+    # register_all_commands — no other code needs to change.
+    config.input_provider = prompt_input
+
     # Initialize GPT client after config loads
     gpt_client = create_gpt_client(api_key=config.openai_key, default_model=config.default_model)
     
@@ -2089,13 +2707,13 @@ def initialize_application() -> Tuple[Config, Any, Scheduler, SchedulerContext, 
     scheduler_context = SchedulerContext()
     obsidian_json_path = get_obsidian_json_path()
     save_vaults_wrapper = create_save_vaults_wrapper(config)
-    
-    # Populate scheduler context
+
+    # Store a live Config reference so vault state is always current.
+    # context.vaults / context.current_vault / context.ignored_vaults are now
+    # read-through properties backed by config — no stale snapshots.
     scheduler_context.obsidian_json_path = obsidian_json_path
-    scheduler_context.vaults = config.vaults
-    scheduler_context.ignored_vaults = config.ignored_vaults
+    scheduler_context.config = config
     scheduler_context.save_vaults = save_vaults_wrapper
-    scheduler_context.current_vault = config.current_vault
     
     # Sync with Obsidian if available
     if os.path.isfile(obsidian_json_path):
@@ -2148,7 +2766,7 @@ def register_all_commands(
     register_command(
         config,
         "reset",
-        lambda args: cmd_reset(args, config, prompt_input),
+        lambda args: cmd_reset(args, config, config.input_provider),
         "Reset all GM Assistant settings to first-launch state (will not delete notes, just assistant config)."
     )
     register_command(
@@ -2160,25 +2778,25 @@ def register_all_commands(
     register_command(
         config,
         "createnote",
-        lambda args: cmd_createnote(args, config.vaults, config.current_vault, prompt_input, config.default_vault_name, history_manager, config),
+        lambda args: cmd_createnote(args, config.vaults, config.current_vault, config.input_provider, config.default_vault_name, history_manager, config),
         "Create a new note, optionally from a template. Usage: createnote [--template X] [--dry-run] [var=value ...]"
     )
     register_command(
         config,
         "gptwrite",
-        lambda args: cmd_gptwrite(args, config.vaults, config.current_vault, prompt_input, gpt_client, history_manager),
+        lambda args: cmd_gptwrite(args, config.vaults, config.current_vault, config.input_provider, gpt_client, history_manager),
         "Ask ChatGPT a question and optionally save to a note: gptwrite NoteName.md: prompt text"
     )
     register_command(
         config,
         "editnote",
-        lambda args: cmd_editnote(args, config.vaults, config.current_vault, prompt_input, list_md_files, read_md_file, gpt_client, history_manager),
+        lambda args: cmd_editnote(args, config.vaults, config.current_vault, config.input_provider, list_md_files, read_md_file, gpt_client, history_manager),
         "Edit a note with ChatGPT and choose how to save: editnote"
     )
     register_command(
         config,
         "showtemplates",
-        lambda args: cmd_showtemplates(args, config.vaults, prompt_input, config.default_vault_name),
+        lambda args: cmd_showtemplates(args, config.vaults, config.input_provider, config.default_vault_name),
         "List and preview note templates."
     )
     register_command(
@@ -2190,37 +2808,37 @@ def register_all_commands(
     register_command(
         config,
         "createtemplate",
-        lambda args: cmd_createtemplate(args, config.vaults, prompt_input, config.default_vault_name, history_manager),
+        lambda args: cmd_createtemplate(args, config.vaults, config.input_provider, config.default_vault_name, history_manager),
         "Create a new markdown template by typing or pasting content."
     )
     register_command(
         config,
         "uploadtemplate",
-        lambda args: cmd_uploadtemplate(args, config.vaults, prompt_input, config.default_vault_name, history_manager),
+        lambda args: cmd_uploadtemplate(args, config.vaults, config.input_provider, config.default_vault_name, history_manager),
         "Upload an existing .md file into the default vault's templates."
     )
     register_command(
         config,
         "uploadalltemplates",
-        lambda args: cmd_uploadalltemplates(args, config.vaults, prompt_input, config.default_vault_name, history_manager),
+        lambda args: cmd_uploadalltemplates(args, config.vaults, config.input_provider, config.default_vault_name, history_manager),
         "Upload all .md files from a folder into the default vault's templates."
     )
     register_command(
         config,
         "deletetemplate",
-        lambda args: cmd_deletetemplate(args, config.vaults, prompt_input, config.default_vault_name),
+        lambda args: cmd_deletetemplate(args, config.vaults, config.input_provider, config.default_vault_name),
         "Delete a template."
     )
     register_command(
         config,
         "addvault",
-        lambda args: setattr(config, 'current_vault', cmd_addvault(args, config.vaults, config.current_vault, save_vaults_wrapper, config.save_settings, prompt_input, list_vaults, config.ignored_vaults)),
+        lambda args: setattr(config, 'current_vault', cmd_addvault(args, config.vaults, config.current_vault, save_vaults_wrapper, config.save_settings, config.input_provider, list_vaults, config.ignored_vaults)),
         "Add a new Obsidian vault."
     )
     register_command(
         config,
         "switch",
-        lambda args: setattr(config, 'current_vault', cmd_switch(args, config.vaults, config.current_vault, config.vault_number_map, config.save_settings, prompt_input, list_vaults, config.ignored_vaults, display_numbered_vaults)),
+        lambda args: setattr(config, 'current_vault', cmd_switch(args, config.vaults, config.current_vault, config.vault_number_map, config.save_settings, config.input_provider, list_vaults, config.ignored_vaults, display_numbered_vaults)),
         "Switch to a different vault."
     )
     register_command(
@@ -2259,12 +2877,7 @@ def register_all_commands(
         lambda args: cmd_send(args, config.vaults, config.current_vault, error, gpt_client),
         "Send a note to ChatGPT: 'send NOTE' or 'upload FOLDER/NOTE'"
     )
-    register_command(
-        config,
-        "upload",
-        lambda args: print("Use 'send' instead. This command is deprecated."),
-        "Deprecated. Use 'send' instead."
-    )
+
     register_command(
         config,
         "search",
@@ -2292,7 +2905,7 @@ def register_all_commands(
     register_command(
         config,
         "pdf2md",
-        lambda args: cmd_pdf2md(args, config, prompt_input),
+        lambda args: cmd_pdf2md(args, config, config.input_provider),
         "Convert a single PDF to Markdown. Output → default vault/Converted. Usage: pdf2md \"PDF_PATH\" --map maps/mapname.yaml"
     )
     register_command(
@@ -2301,29 +2914,27 @@ def register_all_commands(
         lambda args: cmd_pdfbatch(args, config),
         "Convert all PDFs in a folder. Output → default vault/Converted. Usage: pdfbatch \"PDF_FOLDER\" --map maps/mapname.yaml"
     )
-    register_command(
-        config,
-        "pdf-convert",
-        lambda args: cmd_pdf_convert(args, config, prompt_input),
-        "Convert a single PDF to Markdown using pdf_tools. Output → default vault/Converted. Usage: pdf-convert \"PDF_PATH\" [--map maps/mapname.yaml]"
-    )
-    register_command(
-        config,
-        "pdf-batch",
-        lambda args: cmd_pdf_batch(args, config),
-        "Convert all PDFs in a folder using pdf_tools. Output → exports/pdf_md/. Usage: pdf-batch \"PDF_FOLDER\" [--map maps/mapname.yaml]"
-    )
+    # pdf-convert and pdf-batch removed: they were duplicates of pdf2md/pdfbatch
+    # that additionally required the external Marker CLI and wrote to a different
+    # output directory (exports/pdf_md/), creating confusion with no added value.
+    # Use pdf2md / pdfbatch instead — they work without any external dependencies.
     register_command(
         config,
         "pdf-send-to-vault",
         lambda args: cmd_pdf_send_to_vault(args, config),
-        "Convert PDF(s) to Markdown and send to current Obsidian vault. Usage: pdf-send-to-vault --input <PDF_PATH or FOLDER>"
+        "Convert PDF(s) to Markdown and send to current vault's Converted folder. [requires Marker CLI] Usage: pdf-send-to-vault --input <PDF_PATH or FOLDER>"
     )
     register_command(
         config,
         "session-schedule",
-        lambda args: schedule_next_session(prompt_input),
+        lambda args: schedule_next_session(config.input_provider),
         "Schedule the next TTRPG session and generate calendar invite (.ics) file."
+    )
+    register_command(
+        config,
+        "session-discord-export",
+        lambda args: cmd_session_discord_export(config.input_provider),
+        "Schedule a session and export it as a Discord-ready JSON package (includes .ics file)."
     )
     register_command(
         config,
@@ -2381,6 +2992,12 @@ def register_all_commands(
     )
     register_command(
         config,
+        "snapshot-run-now",
+        lambda args: cmd_snapshot_run_now(args, config),
+        "Run the daily snapshot job immediately."
+    )
+    register_command(
+        config,
         "campaign-create",
         lambda args: cmd_campaign_create(args, config),
         "Create a new campaign. Usage: campaign-create <name>"
@@ -2408,6 +3025,60 @@ def register_all_commands(
         "session-create",
         lambda args: cmd_session_create(args, config),
         "Create a new session note for a campaign. Usage: session-create <campaign> \"<session title>\""
+    )
+    register_command(
+        config,
+        "fgu-import-log",
+        lambda args: cmd_fgu_import_log(args, config),
+        "Import a Fantasy Grounds chat log and attach it to a session note. Usage: fgu-import-log <campaign> <session> <log_path>"
+    )
+    register_command(
+        config,
+        "voice-command",
+        lambda args: cmd_voice_command(args, config),
+        "Parse a text command into a VoiceCommand and write it to the inbox. Usage: voice-command <text>"
+    )
+    register_command(
+        config,
+        "voice-commands-from-transcript",
+        lambda args: cmd_voice_commands_from_transcript(args, config),
+        "Extract VoiceCommands from a transcript file and enqueue them. Usage: voice-commands-from-transcript <path>"
+    )
+    register_command(
+        config,
+        "voice-commands-from-audio",
+        lambda args: cmd_voice_commands_from_audio(args, config),
+        "Transcribe an audio file, extract wake-word commands, and enqueue them. Usage: voice-commands-from-audio <path>"
+    )
+    register_command(
+        config,
+        "session-audio-ingest",
+        lambda args: cmd_session_audio_ingest(args, config),
+        'Attach audio to a session, transcribe it, attach transcript, and enqueue wake-word commands. Usage: session-audio-ingest "<campaign_name>" "<session_name>" <audio_path>'
+    )
+    register_command(
+        config,
+        "voice-enable",
+        lambda args: cmd_voice_enable(args, config),
+        "Enable voice command features (transcript/audio parsing)."
+    )
+    register_command(
+        config,
+        "voice-disable",
+        lambda args: cmd_voice_disable(args, config),
+        "Disable voice command features."
+    )
+    register_command(
+        config,
+        "voice-status",
+        lambda args: cmd_voice_status(args, config),
+        "Show whether voice commands are enabled or disabled."
+    )
+    register_command(
+        config,
+        "voice-commands-process",
+        lambda args: cmd_voice_commands_process(args, config),
+        "Process all queued VoiceCommand files in the inbox. Usage: voice-commands-process [--dry-run]"
     )
     register_command(
         config,
@@ -2457,6 +3128,48 @@ def register_all_commands(
         lambda args: cmd_tag_notes(args, config.vaults, config.current_vault, error),
         "List all notes with a specific tag. Usage: tag-notes <tag>"
     )
+
+
+def run_command(
+    command_name: str,
+    args: str,
+    config: Config,
+    error_func: Optional[Callable[[str, ...], None]] = None
+) -> None:
+    """
+    Execute a command programmatically by name and arguments.
+    
+    This function provides a programmatic interface to execute commands
+    registered in the config.commands registry. Useful for voice commands,
+    automation, and other non-interactive command execution.
+    
+    Args:
+        command_name: Name of the command to execute (case-insensitive)
+        args: Command arguments as a string
+        config: Configuration object containing command registry
+        error_func: Optional error handling function. If None, uses a default
+                   that prints error messages.
+
+    Note:
+        Does NOT raise KeyError on unknown commands. If command_name is not
+        found in the registry, error_func is called with "unknown_command" and
+        the function returns normally. Callers should not wrap this in a
+        try/except KeyError.
+    """
+    if error_func is None:
+        def default_error(msg_key: str, **kwargs: Any) -> None:
+            msg = ERRORS.get(msg_key, "Unknown error.").format(**kwargs)
+            print(msg)
+        error_func = default_error
+    
+    cmd_name = command_name.lower()
+    
+    if cmd_name not in config.commands:
+        error_func("unknown_command")
+        return
+    
+    func, _ = config.commands[cmd_name]
+    func(args)
 
 
 def run_main_loop(
@@ -2514,9 +3227,11 @@ def run_main_loop(
 def main() -> None:
     """
     Main entry point for GM Assistant.
-    
+
     Initializes the application, registers commands, and runs the main loop.
     """
+    install_error_handler()  # Must be first — captures crashes during init too
+
     # Initialize application components
     config, gpt_client, scheduler, scheduler_context, history_manager = initialize_application()
     
@@ -2528,7 +3243,7 @@ def main() -> None:
     if not config.current_vault:
         error("no_vault")
         while not config.current_vault:
-            user_path = prompt_input("Please enter the path to your Obsidian vault folder (or type 'quit' to exit): ").strip()
+            user_path = config.input_provider("Please enter the path to your Obsidian vault folder (or type 'quit' to exit): ").strip()
             if user_path.lower() == "quit":
                 print("Exiting GM Assistant. Goodbye!")
                 return
@@ -2548,4 +3263,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    guarded_main(main)
