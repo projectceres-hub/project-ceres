@@ -966,6 +966,29 @@ class TidalPanel(QDockWidget):
     def get_volume(self) -> int:
         return self._vol_slider.value()
 
+    def get_np_state(self) -> dict:
+        """Return current playback state for the Now Playing panel."""
+        playing = bool(getattr(self, "_is_playing", False))
+        paused = bool(getattr(self, "_paused", False))
+        title = self._track_label.text() if hasattr(self, "_track_label") else ""
+        subtitle = self._artist_label.text() if hasattr(self, "_artist_label") else ""
+        if title == "No track":
+            title = ""
+        dur = getattr(self, "_duration_s", 0)
+        prog = getattr(self, "_progress_s", 0)
+        pct = int(prog * 100 / dur) if dur > 0 else (-1 if not (playing or paused) else 0)
+        return {
+            "playing": playing,
+            "paused": paused,
+            "title": title,
+            "subtitle": subtitle,
+            "progress_pct": pct,
+            "can_pause": True,
+            "can_next": True,
+            "can_prev": False,
+            "can_stop": True,
+        }
+
     # ── Discord command handler ───────────────────────────────────────────────
 
     @Slot(str, str)
@@ -1012,11 +1035,12 @@ class TidalPanel(QDockWidget):
         if self._duration_s > 0:
             frac = min(self._progress_s / self._duration_s, 1.0)
             self._progress_bar.setValue(int(frac * 1000))
+            self._time_label.setText(
+                f"{_s_to_str(self._progress_s)} / {_s_to_str(self._duration_s)}"
+            )
         else:
             self._progress_bar.setValue(0)
-        self._time_label.setText(
-            f"{_s_to_str(self._progress_s)} / {_s_to_str(self._duration_s)}"
-        )
+            self._time_label.setText("0:00 / 0:00")
 
     def _tick_progress(self) -> None:
         if self._is_playing and not self._paused and self._duration_s > 0:

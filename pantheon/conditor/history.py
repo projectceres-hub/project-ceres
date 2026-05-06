@@ -13,7 +13,7 @@ import shutil
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, Iterator, List, Optional
 
 
 @dataclass
@@ -114,6 +114,84 @@ class HistoryManager:
             print(f"Warning: Failed to read history index: {e}")
             print("Hint: Check file permissions for the history directory.")
             return []
+
+    def _iter_index_dicts_reverse(self) -> Iterator[Dict[str, str]]:
+        """Yield raw history index objects from newest to oldest.
+
+        The index is written as a pretty-printed JSON array with entries
+        appended chronologically. Reading from the end lets limited history
+        lookups stop once enough matching entries have been found.
+        """
+        if not self.index_path.exists():
+            return
+
+        chunk_size = 8192
+        pending = b""
+        position = self.index_path.stat().st_size
+        object_lines: List[str] = []
+        in_object = False
+
+        with open(self.index_path, "rb") as f:
+            while position > 0:
+                read_size = min(chunk_size, position)
+                position -= read_size
+                f.seek(position)
+                block = f.read(read_size) + pending
+                lines = block.split(b"\n")
+                pending = lines[0]
+
+                for raw_line in reversed(lines[1:]):
+                    line = raw_line.decode("utf-8")
+                    stripped = line.strip()
+                    if not stripped or stripped in {"[", "]"}:
+                        continue
+                    if stripped in {"}", "},"}:
+                        in_object = True
+                        object_lines = [line.rstrip().rstrip(",")]
+                        continue
+                    if in_object:
+                        object_lines.append(line)
+                        if stripped == "{":
+                            obj_text = "\n".join(reversed(object_lines))
+                            yield json.loads(obj_text)
+                            object_lines = []
+                            in_object = False
+
+            if pending:
+                line = pending.decode("utf-8")
+                stripped = line.strip()
+                if in_object and stripped == "{":
+                    object_lines.append(line)
+                    obj_text = "\n".join(reversed(object_lines))
+                    yield json.loads(obj_text)
+
+    def _load_index_for_note(self, note_path: Path, limit: int) -> List[HistoryEntry]:
+        """Load up to ``limit`` newest history entries for one note."""
+        if limit < 1:
+            return []
+
+        note_path_str = str(Path(note_path).resolve())
+        entries: List[HistoryEntry] = []
+        try:
+            for raw_entry in self._iter_index_dicts_reverse():
+                entry = HistoryEntry.from_dict(raw_entry)
+                if entry.note_path == note_path_str:
+                    entries.append(entry)
+                    if len(entries) >= limit:
+                        break
+        except (json.JSONDecodeError, KeyError, FileNotFoundError) as e:
+            print(f"Warning: Failed to load history index: {e}")
+            print("Hint: History index may be corrupted. Falling back to full history scan.")
+            all_entries = self._load_index()
+            matching_entries = [e for e in all_entries if e.note_path == note_path_str]
+            matching_entries.sort(key=lambda e: e.timestamp, reverse=True)
+            return matching_entries[:limit]
+        except (PermissionError, OSError) as e:
+            print(f"Warning: Failed to read history index: {e}")
+            print("Hint: Check file permissions for the history directory.")
+            return []
+
+        return entries
     
     def _save_index(self, entries: List[HistoryEntry]) -> None:
         """
@@ -200,17 +278,7 @@ class HistoryManager:
         Returns:
             List of HistoryEntry objects, sorted by timestamp (most recent first)
         """
-        note_path_str = str(Path(note_path).resolve())
-        entries = self._load_index()
-        
-        # Filter entries for this specific note
-        matching_entries = [e for e in entries if e.note_path == note_path_str]
-        
-        # Sort by timestamp (most recent first)
-        matching_entries.sort(key=lambda e: e.timestamp, reverse=True)
-        
-        # Limit results
-        return matching_entries[:limit]
+        return self._load_index_for_note(note_path, limit)
     
     def restore_version(self, entry: HistoryEntry) -> bool:
         """

@@ -1317,6 +1317,40 @@ class YouTubePanel(QDockWidget):
             except Exception:
                 pass
 
+    def get_np_state(self) -> dict:
+        """Return current playback state for the Now Playing panel."""
+        try:
+            import pygame
+
+            playing = bool(pygame.mixer.get_init() and pygame.mixer.music.get_busy())
+        except Exception:
+            playing = False
+        title = getattr(self, "_current_title", "")
+        subtitle = getattr(self, "_current_channel", "")
+        dur = getattr(self, "_current_duration", 0)  # seconds
+        elapsed = 0
+        try:
+            import pygame as _pg
+
+            if _pg.mixer.get_init():
+                pos_ms = _pg.mixer.music.get_pos()
+                if pos_ms >= 0:
+                    elapsed = int(pos_ms / 1000)
+        except Exception:
+            pass
+        pct = int(elapsed * 100 / dur) if dur > 0 else (-1 if not playing else 0)
+        return {
+            "playing": playing,
+            "paused": False,
+            "title": title,
+            "subtitle": subtitle,
+            "progress_pct": pct,
+            "can_pause": False,
+            "can_next": False,
+            "can_prev": False,
+            "can_stop": True,
+        }
+
     # ── Voice command handler ──────────────────────────────────────────────────
 
     @Slot(str, str)
@@ -1342,13 +1376,16 @@ class YouTubePanel(QDockWidget):
                 return
             if not _GOOGLE_API_AVAILABLE:
                 self.status_message.emit(
-                    "YouTube: google-api-python-client not installed"
+                    "YouTube: google-api-python-client not installed — "
+                    "run: pip install google-api-python-client"
                 )
                 return
-            # Trigger a search; _on_results_ready will auto-play the top result
-            self._autoplay_on_results = True
-            self._search_edit.setText(query)
-            self._on_search_clicked()
+            if not query.strip():
+                self.status_message.emit("YouTube: no search query provided")
+                return
+            self._search_edit.setText(query.strip())
+            self._sig_search.emit(self._api_key, query.strip())
+            self.status_message.emit(f"YouTube ← playing '{query}'…")
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
 

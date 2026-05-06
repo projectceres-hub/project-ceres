@@ -4,6 +4,7 @@ __pycache__/
 *$py.class
 
 # Environment & settings
+.venv/
 .env
 variables.env
 settings.json
@@ -62,4 +63,3 @@ Thumbs.db
 .cursor/
 
 # AI Helper Files
-PROJECT_MAP.md

@@ -1008,6 +1008,21 @@ class SyrinscapePanel(QDockWidget):
                     f"Syrinscape: no mood matching '{query}' in current soundset"
                 )
 
+    def get_np_state(self) -> dict:
+        """Return current playback state for the Now Playing panel."""
+        connected = bool(getattr(self, "_connected", False))
+        return {
+            "playing": connected,
+            "paused": False,
+            "title": "Active" if connected else "",
+            "subtitle": "Syrinscape connected" if connected else "",
+            "progress_pct": -1,
+            "can_pause": False,
+            "can_next": False,
+            "can_prev": False,
+            "can_stop": connected,
+        }
+
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     def closeEvent(self, event) -> None:  # type: ignore[override]

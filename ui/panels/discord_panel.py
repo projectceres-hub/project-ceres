@@ -181,6 +181,45 @@ PERSONA_RESPONSES: Dict[str, Dict[str, List[str]]] = {
             "🔇 Local player halted.",
             "🔇 Playback stopped.",
         ],
+        "plex_play": [
+            "🎬 Searching Plex — *{query}* — streaming now.",
+            "🎬 On it. Pulling up *{query}* from Plex.",
+            "🎬 Plex queued — *{query}* — playing now.",
+            "🎬 Found it. *{query}* — streaming from Plex.",
+            "🎬 *{query}* — loading from Plex.",
+        ],
+        "plex_stop": [
+            "🔇 Plex playback stopped.",
+            "🔇 Cutting the Plex stream.",
+            "🔇 Done. Plex is silent.",
+            "🔇 Plex playback halted.",
+            "🔇 Stream cut.",
+        ],
+        "jellyfin_play": [
+            "🎬 Searching Jellyfin — *{query}* — streaming now.",
+            "🎬 On it. Pulling up *{query}* from Jellyfin.",
+            "🎬 Jellyfin queued — *{query}* — playing now.",
+            "🎬 Found it. *{query}* — streaming from Jellyfin.",
+            "🎬 *{query}* — loading from Jellyfin.",
+        ],
+        "jellyfin_stop": [
+            "🔇 Jellyfin playback stopped.",
+            "🔇 Cutting the Jellyfin stream.",
+            "🔇 Done. Jellyfin is silent.",
+            "🔇 Jellyfin playback halted.",
+            "🔇 Stream cut.",
+        ],
+        "scene": [
+            "Setting the scene for {query}…",
+            "Activating scene: {query}.",
+            "Firing all panels for {query}.",
+            "{query} — all systems go.",
+        ],
+        "scene_stop": [
+            "All scenes stopped.",
+            "Cutting the scene.",
+            "Everything silenced.",
+        ],
     },
     "chroma": {
         "add_bookmark": [
@@ -266,6 +305,45 @@ PERSONA_RESPONSES: Dict[str, Dict[str, List[str]]] = {
             "🔇 Local signal cut.",
             "🔇 Feed offline. Local stream ended.",
             "🔇 Local playback terminated.",
+        ],
+        "plex_play": [
+            "🎬 Plex signal acquired — *{query}* — routing audio.",
+            "🎬 Stream locked. *{query}* — Plex feed initialising.",
+            "🎬 Pulling *{query}* from the Plex catalogue.",
+            "🎬 Uplink confirmed. *{query}* — Plex playback online.",
+            "🎬 *{query}* — Plex data stream engaged.",
+        ],
+        "plex_stop": [
+            "🔇 Plex feed severed.",
+            "🔇 Plex audio stream terminated.",
+            "🔇 Plex signal cut.",
+            "🔇 Feed offline. Plex stream ended.",
+            "🔇 Plex playback terminated.",
+        ],
+        "jellyfin_play": [
+            "🎬 Jellyfin signal acquired — *{query}* — routing audio.",
+            "🎬 Stream locked. *{query}* — Jellyfin feed initialising.",
+            "🎬 Pulling *{query}* from the Jellyfin catalogue.",
+            "🎬 Uplink confirmed. *{query}* — Jellyfin playback online.",
+            "🎬 *{query}* — Jellyfin data stream engaged.",
+        ],
+        "jellyfin_stop": [
+            "🔇 Jellyfin feed severed.",
+            "🔇 Jellyfin audio stream terminated.",
+            "🔇 Jellyfin signal cut.",
+            "🔇 Feed offline. Jellyfin stream ended.",
+            "🔇 Jellyfin playback terminated.",
+        ],
+        "scene": [
+            "Setting the scene for {query}…",
+            "Activating scene: {query}.",
+            "Firing all panels for {query}.",
+            "{query} — all systems go.",
+        ],
+        "scene_stop": [
+            "All scenes stopped.",
+            "Cutting the scene.",
+            "Everything silenced.",
         ],
     },
 }
@@ -425,7 +503,9 @@ class _DiscordWorker(QObject):
     spotify_command       = Signal(str, str)   # action, query
     youtube_command       = Signal(str, str)   # action, query
     tidal_command         = Signal(str, str)   # action, query
-    local_music_command   = Signal(str, str)   # action, query → LocalMusicPanel
+    local_music_command    = Signal(str, str)   # action, query → LocalMusicPanel
+    plex_jellyfin_command = Signal(str, str)   # action, query → PlexJellyfinPanel
+    scene_command         = Signal(str, str)   # action, query → MasterScenePanel
     poll_sent             = Signal(str)        # message_id (str)
     vote_updated          = Signal(dict)       # {option_idx: vote_count}
     poll_error            = Signal(str)        # error message
@@ -449,6 +529,14 @@ class _DiscordWorker(QObject):
     # Discord text commands routed to Local Music
     _LOCAL_CMDS: Tuple[str, ...] = (
         "!localplay", "!localstop", "!localpause", "!localnext",
+    )
+
+    # Discord text commands routed to Plex / Jellyfin
+    _PLEX_CMDS: Tuple[str, ...] = (
+        "!plexplay", "!plexstop", "!plexpause",
+    )
+    _JELLY_CMDS: Tuple[str, ...] = (
+        "!jellyplay", "!jellystop", "!jellypause",
     )
 
     def __init__(self, token: str, parent: Optional[QObject] = None) -> None:
@@ -565,6 +653,35 @@ class _DiscordWorker(QObject):
                     query  = content[len(cmd):].strip()
                     self.local_music_command.emit(action, query)
                     return
+
+            # Plex text commands: !plexplay <query>, !plexstop, !plexpause
+            for cmd in self._PLEX_CMDS:
+                if lower.startswith(cmd):
+                    action = cmd.lstrip("!")[4:]  # strip "plex" prefix → "play"/"stop"/"pause"
+                    query  = content[len(cmd):].strip()
+                    self.plex_jellyfin_command.emit(action, query)
+                    return
+
+            # Jellyfin text commands: !jellyplay <query>, !jellystop, !jellypause
+            for cmd in self._JELLY_CMDS:
+                if lower.startswith(cmd):
+                    action = cmd.lstrip("!")[5:]  # strip "jelly" prefix → "play"/"stop"/"pause"
+                    query  = content[len(cmd):].strip()
+                    self.plex_jellyfin_command.emit(action, query)
+                    return
+
+            if lower.startswith("!scene "):
+                query = content[len("!scene "):].strip()
+                self.scene_command.emit("play", query)
+                pool = PERSONA_RESPONSES["veras"]["scene"]
+                msg = random.choice(pool).replace("{query}", query)
+                self.send_bot_message(msg)
+                return
+            if lower == "!scenestop":
+                self.scene_command.emit("stop", "")
+                pool = PERSONA_RESPONSES["veras"]["scene_stop"]
+                self.send_bot_message(random.choice(pool))
+                return
 
         try:
             await self._client.start(self._token)
@@ -893,6 +1010,7 @@ class DiscordPanel(QDockWidget):
         syrinscape_command(act,q) — forwarded to SyrinscapePanel
         youtube_command(act, q)   — forwarded to YouTubePanel
         tidal_command(act, q)    — forwarded to TidalPanel
+        scene_command(act, q)    — forwarded to MasterScenePanel
     """
 
     status_message: Signal     = Signal(str)
@@ -900,7 +1018,9 @@ class DiscordPanel(QDockWidget):
     syrinscape_command: Signal = Signal(str, str)   # action, query → SyrinscapePanel
     youtube_command: Signal      = Signal(str, str)   # action, query → YouTubePanel
     tidal_command: Signal        = Signal(str, str)   # action, query → TidalPanel
-    local_music_command: Signal  = Signal(str, str)   # action, query → LocalMusicPanel
+    local_music_command: Signal    = Signal(str, str)   # action, query → LocalMusicPanel
+    plex_jellyfin_command: Signal  = Signal(str, str)   # action, query → PlexJellyfinPanel
+    scene_command: Signal          = Signal(str, str)   # action, query → MasterScenePanel
 
     # ── Scheduler-facing signals ──────────────────────────────────────────────
     # Forwarded from _DiscordWorker so SchedulerPanel never touches the worker.
@@ -1192,6 +1312,12 @@ class DiscordPanel(QDockWidget):
         self._worker.local_music_command.connect(
             lambda a, q: self.local_music_command.emit(a, q)
         )
+        self._worker.plex_jellyfin_command.connect(
+            lambda a, q: self.plex_jellyfin_command.emit(a, q)
+        )
+        self._worker.scene_command.connect(
+            lambda a, q: self.scene_command.emit(a, q)
+        )
 
         # Scheduler signal forwarding + reply-channel combo population
         self._worker.text_channels_updated.connect(self.text_channels_available)
@@ -1396,8 +1522,85 @@ class DiscordPanel(QDockWidget):
         elif _re.search(r'\bnext\s+(?:local\s+)?track\b', _lower):
             self.local_music_command.emit("next", "")
 
+        # ── Plex / Jellyfin pattern detection ──────────────────────────────────
+        _pj_cmd_type: Optional[str] = None
+        _pj_query = ""
+
+        _plex_play_match = (
+            _re.search(r'\bplay\s+(.+?)\s+on\s+plex\b', _lower)
+            or _re.search(r'\bplex\s+play\s+(.+)', _lower)
+        )
+        _jelly_play_match = (
+            _re.search(r'\bplay\s+(.+?)\s+on\s+jellyfin\b', _lower)
+            or _re.search(r'\bjellyfin\s+play\s+(.+)', _lower)
+        )
+        if _plex_play_match:
+            _pj_query    = _plex_play_match.group(1).strip()
+            _pj_cmd_type = "plex_play"
+            self.plex_jellyfin_command.emit("play", _pj_query)
+        elif _jelly_play_match:
+            _pj_query    = _jelly_play_match.group(1).strip()
+            _pj_cmd_type = "jellyfin_play"
+            self.plex_jellyfin_command.emit("play", _pj_query)
+        elif _re.search(r'\b(stop|pause)\s+plex\b', _lower):
+            _pj_cmd_type = "plex_stop"
+            self.plex_jellyfin_command.emit("stop", "")
+        elif _re.search(r'\bplex\s+(stop|pause)\b', _lower):
+            _pj_cmd_type = "plex_stop"
+            self.plex_jellyfin_command.emit("stop", "")
+        elif _re.search(r'\b(stop|pause)\s+jellyfin\b', _lower):
+            _pj_cmd_type = "jellyfin_stop"
+            self.plex_jellyfin_command.emit("stop", "")
+        elif _re.search(r'\bjellyfin\s+(stop|pause)\b', _lower):
+            _pj_cmd_type = "jellyfin_stop"
+            self.plex_jellyfin_command.emit("stop", "")
+
+        # ── Master Scene pattern detection ─────────────────────────────────────
+        _ms_cmd_type: Optional[str] = None
+        _ms_query = ""
+
+        _other_media = (
+            _syr_cmd_type is not None
+            or _yt_cmd_type is not None
+            or _td_cmd_type is not None
+            or _lm_cmd_type is not None
+            or _pj_cmd_type is not None
+        )
+        if not _other_media:
+            scene_patterns = [
+                r"play scene (.+)",
+                r"activate scene (.+)",
+                r"launch scene (.+)",
+                r"start scene (.+)",
+            ]
+            for pattern in scene_patterns:
+                m = _re.search(pattern, _lower)
+                if m:
+                    _ms_query = m.group(1).strip()
+                    _ms_cmd_type = "scene"
+                    self.scene_command.emit("play", _ms_query)
+                    break
+            if _ms_cmd_type is None:
+                if "stop scene" in _lower or "stop all scenes" in _lower:
+                    _ms_cmd_type = "scene_stop"
+                    self.scene_command.emit("stop", "")
+
         # ── Build the acknowledgement line ──
-        if _lm_cmd_type:
+        if _ms_cmd_type:
+            pool = (
+                PERSONA_RESPONSES
+                .get(persona_key, PERSONA_RESPONSES["veras"])
+                .get(_ms_cmd_type, PERSONA_RESPONSES["veras"]["custom"])
+            )
+            ack = random.choice(pool).replace("{query}", _ms_query)
+        elif _pj_cmd_type:
+            pool = (
+                PERSONA_RESPONSES
+                .get(persona_key, PERSONA_RESPONSES["veras"])
+                .get(_pj_cmd_type, PERSONA_RESPONSES["veras"]["custom"])
+            )
+            ack = random.choice(pool).replace("{query}", _pj_query)
+        elif _lm_cmd_type:
             pool = (
                 PERSONA_RESPONSES
                 .get(persona_key, PERSONA_RESPONSES["veras"])

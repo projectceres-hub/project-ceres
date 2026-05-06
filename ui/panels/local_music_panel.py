@@ -346,6 +346,9 @@ class LocalMusicPanel(QDockWidget):
         self._paused_pos_s: float               = 0.0   # seconds elapsed when paused
         self._scanner:      Optional[_LibraryScanner] = None
         self._volume:       int                 = 80
+        self._eq_enabled:   bool                = False
+        self._eq_bands:     List[float]         = [0.0] * 10
+        self._eq_temp_wav:  Optional[Path]      = None
 
         # ── Scene slots ────────────────────────────────────────────────────────
         self._scenes: List[_SceneSlot] = [
@@ -869,7 +872,16 @@ class LocalMusicPanel(QDockWidget):
         try:
             if not _pygame.mixer.get_init():
                 _pygame.mixer.init()
-            _pygame.mixer.music.load(str(track.path))
+            if self._eq_temp_wav is not None and self._eq_temp_wav.exists():
+                try:
+                    self._eq_temp_wav.unlink()
+                except OSError:
+                    pass
+                self._eq_temp_wav = None
+            _play_path = self._apply_eq_to_file(track.path)
+            if _play_path != track.path:
+                self._eq_temp_wav = _play_path
+            _pygame.mixer.music.load(str(_play_path))
             _pygame.mixer.music.set_volume(self._volume / 100.0)
             _pygame.mixer.music.play()
         except Exception as exc:
@@ -1195,6 +1207,86 @@ class LocalMusicPanel(QDockWidget):
             except Exception:
                 pass
 
+    def set_eq_bands(self, enabled: bool, bands: list) -> None:
+        """
+        Store EQ settings; applied when the next track starts playing.
+
+        Local Music applies EQ by reading the audio file into a numpy array,
+        filtering with scipy, writing to a temp WAV, and loading that via
+        pygame.mixer.music. If numpy/scipy are unavailable, this is a no-op.
+
+        Args:
+            enabled: Whether EQ is active.
+            bands:   List of 10 dB gain floats matching BAND_FREQS.
+        """
+        self._eq_enabled = enabled
+        self._eq_bands = list(bands)
+        self.status_message.emit(
+            f"EQ {'enabled' if enabled else 'disabled'} for Local Music "
+            "(applies on next track)"
+        )
+
+    def _apply_eq_to_file(self, path: Path) -> Path:
+        """
+        If EQ is active, apply scipy IIR filtering to *path* and return a
+        temp file path. Otherwise return *path* unchanged.
+
+        Returns the original path if numpy/scipy/wav read are unavailable.
+        """
+        if not getattr(self, "_eq_enabled", False):
+            return path
+        bands = getattr(self, "_eq_bands", [0.0] * 10)
+        if all(abs(b) < 0.05 for b in bands):
+            return path
+        try:
+            import numpy as np
+            import tempfile
+            from scipy.io import wavfile
+
+            from ui.panels.equalizer_panel import apply_eq
+
+            sr, data = wavfile.read(str(path))
+            float_data = data.astype(np.float32)
+            float_data = float_data / 32768.0
+            filtered = apply_eq(float_data, sr, bands)
+            filtered = np.clip(filtered * 32767.0, -32768, 32767).astype(np.int16)
+            tmp = tempfile.NamedTemporaryFile(
+                suffix=".wav", delete=False, dir=tempfile.gettempdir()
+            )
+            tmp.close()
+            wavfile.write(tmp.name, sr, filtered)
+            return Path(tmp.name)
+        except Exception:
+            return path
+
+    def get_np_state(self) -> dict:
+        """Return current playback state for the Now Playing panel."""
+        import time
+
+        playing = bool(getattr(self, "_is_playing", False))
+        paused = bool(getattr(self, "_is_paused", False))
+        track = getattr(self, "_current", None)
+        title = track.title if track else ""
+        subtitle = track.artist if track else ""
+        dur = getattr(track, "duration_s", 0) if track else 0
+        elapsed = 0
+        if playing or paused:
+            start = getattr(self, "_play_start_s", 0.0)
+            paused_pos = getattr(self, "_paused_pos_s", 0.0)
+            elapsed = int(paused_pos if paused else (time.time() - start))
+        pct = int(elapsed * 100 / dur) if dur > 0 else (-1 if not (playing or paused) else 0)
+        return {
+            "playing": playing,
+            "paused": paused,
+            "title": title,
+            "subtitle": subtitle,
+            "progress_pct": pct,
+            "can_pause": True,
+            "can_next": True,
+            "can_prev": False,
+            "can_stop": True,
+        }
+
     def _on_vol_changed(self, value: int) -> None:
         """Handle the panel's own volume slider movement."""
         self._volume = value
@@ -1249,6 +1341,12 @@ class LocalMusicPanel(QDockWidget):
         """Stop playback and timers on close to avoid dangling threads."""
         self._progress_timer.stop()
         self._poll_timer.stop()
+        if self._eq_temp_wav is not None and self._eq_temp_wav.exists():
+            try:
+                self._eq_temp_wav.unlink()
+            except OSError:
+                pass
+            self._eq_temp_wav = None
         if _PYGAME_OK:
             try:
                 _pygame.mixer.music.stop()
@@ -1256,23 +1354,5 @@ class LocalMusicPanel(QDockWidget):
                 pass
         if self._scanner and self._scanner.isRunning():
             self._scanner.quit()
-            self._scanner.wait()
+            self._scanner.wait(2000)
         super().closeEvent(event)
-
-
-# ── Qt helpers ─────────────────────────────────────────────────────────────────
-
-def _qcolor(hex_str: str):
-    """Return a QColor from a hex string — used for tree item foregrounds."""
-    try:
-        from PyQt5.QtGui import QColor
-    except ImportError:
-        from PySide6.QtGui import QColor  # type: ignore
-    return QColor(hex_str)
-
-
-def _bold_font() -> QFont:
-    """Return a bold QFont for tree artist rows."""
-    f = QFont()
-    f.setBold(True)
-    return f

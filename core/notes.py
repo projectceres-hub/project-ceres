@@ -15,6 +15,17 @@ from typing import Callable, Dict, List, Optional
 from pantheon.insitor import NoteSpec, create_note
 
 
+def _assert_within(base: Path, target: Path, label: str = "path") -> Path:
+    """Resolve target and assert it is inside base. Raises ValueError if not."""
+    resolved = target.resolve()
+    base_resolved = base.resolve()
+    try:
+        resolved.relative_to(base_resolved)
+    except ValueError:
+        raise ValueError(f"Refusing to access {label} outside allowed directory: {resolved}")
+    return resolved
+
+
 def cmd_read(
     args: str,
     vaults: Dict[str, str],
@@ -45,7 +56,15 @@ def cmd_read(
         matches = [f for f in files if f.lower() == search_name]
 
     if len(matches) == 1:
-        full_path = os.path.join(vaults[current_vault], matches[0])
+        try:
+            full_path = _assert_within(
+                Path(vaults[current_vault]),
+                Path(vaults[current_vault]) / matches[0],
+                "note path",
+            )
+        except ValueError as e:
+            print(f"Error: {e}")
+            return
         try:
             with open(full_path, "r", encoding="utf-8") as file:
                 print(file.read())
@@ -131,7 +150,15 @@ def cmd_send(
         matches = [f for f in files if f.lower() == search_name]
 
     if len(matches) == 1:
-        full_path = os.path.join(vaults[current_vault], matches[0])
+        try:
+            full_path = _assert_within(
+                Path(vaults[current_vault]),
+                Path(vaults[current_vault]) / matches[0],
+                "note path",
+            )
+        except ValueError as e:
+            print(f"Error: {e}")
+            return
         try:
             with open(full_path, "r", encoding="utf-8") as file:
                 content = file.read()
@@ -194,11 +221,16 @@ def list_md_files(
     path = vaults[current_vault]
     md_files = []
     try:
+        vault_path = Path(path).resolve()
         for root, dirs, files in os.walk(path):
             if default_vault_name in path and "templates" in root:
                 continue
             for file in files:
                 if file.endswith('.md'):
+                    try:
+                        _assert_within(vault_path, Path(root) / file, "note path")
+                    except ValueError:
+                        continue
                     rel_dir = os.path.relpath(root, path)
                     rel_file = os.path.join(rel_dir, file) if rel_dir != "." else file
                     md_files.append(rel_file)
@@ -234,7 +266,11 @@ def read_md_file(
         error("no_vault")
         return ""
     path = vaults[current_vault]
-    full_path = os.path.join(path, filename)
+    try:
+        full_path = _assert_within(Path(path), Path(path) / filename, "note path")
+    except ValueError as e:
+        print(f"Error: {e}")
+        return ""
     try:
         with open(full_path, "r", encoding="utf-8") as file:
             return file.read()
@@ -337,7 +373,7 @@ def cmd_createnote(
                             template_file = t
                             break
                     if not template_file:
-                        print(f"Template '{template_name}' not found. Available templates:")
+                        print(f"Error: Template '{template_name}' not found. Available templates:")
                         for i, t in enumerate(templates, 1):
                             print(f"  {i}. {t}")
                         return
@@ -366,7 +402,7 @@ def cmd_createnote(
                         print(f"Error: Unexpected error reading template: {e}")
                         content = ""
                 else:
-                    print("Template not found. Creating blank note.")
+                    print("Warning: Template not found. Creating blank note.")
         except (PermissionError, OSError) as e:
             print(f"Error: Failed to access template directory: {e}")
             print(f"Hint: Check that '{template_dir}' exists and is accessible.")

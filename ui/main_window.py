@@ -5,10 +5,10 @@ QMainWindow with a dark game theme, dockable Winamp-style panels, and a
 menu bar for toggling each panel on/off.
 
 Panel slots (initial layout):
-  LEFT    — Vault / Notes
-  RIGHT   — Discord  |  Spotify  (tabbed)
+  LEFT    — Ceres Chat (dock)  |  Vault / Notes  |  Mixer
+  RIGHT   — Discord  |  Spotify  (tabbed)  + other media panels
   BOTTOM  — Console
-  FLOAT   — Soundboard, Fantasy Grounds (start floating, user can dock)
+  CENTRAL — dark placeholder (chat is dockable, not central)
 """
 
 from __future__ import annotations
@@ -47,8 +47,14 @@ from ui.panels.syrinscape_panel   import SyrinscapePanel
 from ui.panels.youtube_panel      import YouTubePanel
 from ui.panels.tidal_panel        import TidalPanel
 from ui.panels.local_music_panel  import LocalMusicPanel
-from ui.panels.mixer_panel        import MixerPanel
+from ui.panels.now_playing_panel  import NowPlayingPanel
+from ui.panels.equalizer_panel    import EqualizerPanel
+from ui.panels.visualiser_panel      import VisualiserPanel
+from ui.panels.plex_jellyfin_panel   import PlexJellyfinPanel
+from ui.panels.master_scene_panel    import MasterScenePanel
+from ui.panels.mixer_panel           import MixerPanel
 from ui.dialogs.preferences_dialog import PreferencesDialog
+from core.vaults import get_obsidian_json_path, sync_obsidian_vaults
 
 _ASSETS = Path(__file__).resolve().parent / "assets"
 
@@ -90,23 +96,43 @@ class MainWindow(QMainWindow):
         self._restore_geometry()
         self._apply_tab_icons()   # must run AFTER restoreState() rebuilds tab bars
 
-    # ── Central widget — Ceres Chat ────────────────────────────────────────────
+    # ── Central widget — placeholder (Ceres Chat is dockable) ─────────────────
 
     def _build_central_widget(self) -> None:
         """
-        The central widget is the Ceres conversational chat panel.
-        Users interact with the GM Assistant through plain English here;
-        the agent interprets intent and dispatches to the right panel/module.
+        Central widget is now a minimal dark placeholder.
+        Ceres Chat lives in a dockable QDockWidget (_chat_dock) built in
+        _build_panels so it can be moved, floated, and toggled like all
+        other panels.
         """
-        self._chat_panel = ChatPanel(self._config, self._run_command, self)
-        self._chat_panel.status_message.connect(self._set_status)
-        self._chat_panel.request_console.connect(self._show_console_output)
-        self.setCentralWidget(self._chat_panel)
+        placeholder = QWidget()
+        placeholder.setStyleSheet(f"QWidget {{ background: {BG}; }}")
+        self.setCentralWidget(placeholder)
 
     # ── Panels ─────────────────────────────────────────────────────────────────
 
     def _build_panels(self) -> None:
         """Create and dock all panels."""
+
+        # 0. Ceres Chat — left side, full height (dockable like all other panels)
+        self._chat_panel = ChatPanel(self._config, self._run_command, self)
+        self._chat_panel.status_message.connect(self._set_status)
+        self._chat_panel.request_console.connect(self._show_console_output)
+
+        self._chat_dock = QDockWidget("Ceres Chat", self)
+        self._chat_dock.setObjectName("CeresChatDock")
+        self._chat_dock.setWidget(self._chat_panel)
+        self._chat_dock.setAllowedAreas(
+            Qt.DockWidgetArea.LeftDockWidgetArea
+            | Qt.DockWidgetArea.RightDockWidgetArea
+            | Qt.DockWidgetArea.BottomDockWidgetArea
+        )
+        self._chat_dock.setFeatures(
+            QDockWidget.DockWidgetFeature.DockWidgetMovable  # type: ignore[attr-defined]
+            | QDockWidget.DockWidgetFeature.DockWidgetFloatable
+            | QDockWidget.DockWidgetFeature.DockWidgetClosable
+        )
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self._chat_dock)  # type: ignore[attr-defined]
 
         # 1. Vault / Notes — left side
         self._vault_panel = VaultNotesPanel(self._config, self._run_command, self)
@@ -212,6 +238,64 @@ class MainWindow(QMainWindow):
         self._mixer_panel.register_source("Tidal",        self._tidal_panel,        "tidal.png")
         self._mixer_panel.register_source("Local Music",  self._local_music_panel,  "music.png")
 
+        # 14. Now Playing — right side, tabbed after Local Music
+        self._now_playing_panel = NowPlayingPanel(self)
+        self._now_playing_panel.status_message.connect(self._set_status)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._now_playing_panel)  # type: ignore[attr-defined]
+        self.tabifyDockWidget(self._local_music_panel, self._now_playing_panel)
+
+        self._now_playing_panel.register_source("Spotify", self._spotify_panel, "spotify.png")
+        self._now_playing_panel.register_source("YouTube", self._youtube_panel, "youtube.png")
+        self._now_playing_panel.register_source("Tidal", self._tidal_panel, "tidal.png")
+        self._now_playing_panel.register_source("Local Music", self._local_music_panel, "music.png")
+        self._now_playing_panel.register_source("Syrinscape", self._syrinscape_panel, "syrinscape.png")
+
+        # 15. Equalizer — right side, tabbed after Now Playing
+        self._eq_panel = EqualizerPanel(self._config, self)
+        self._eq_panel.status_message.connect(self._set_status)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._eq_panel)  # type: ignore[attr-defined]
+        self.tabifyDockWidget(self._now_playing_panel, self._eq_panel)
+
+        self._eq_panel.eq_changed.connect(self._soundboard_panel.set_eq_bands)
+        self._eq_panel.eq_changed.connect(self._local_music_panel.set_eq_bands)
+
+        # ── Visualiser Panel — dock #16
+        self._visualiser_panel = VisualiserPanel(self)
+        self._visualiser_panel.status_message.connect(self._set_status)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._visualiser_panel)  # type: ignore[attr-defined]
+        self.tabifyDockWidget(self._eq_panel, self._visualiser_panel)
+
+        # 17. Plex / Jellyfin — right side, tabbed after Visualiser
+        self._plex_jellyfin_panel = PlexJellyfinPanel(self._config, self._run_command, self)
+        self._plex_jellyfin_panel.status_message.connect(self._set_status)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._plex_jellyfin_panel)  # type: ignore[attr-defined]
+        self.tabifyDockWidget(self._visualiser_panel, self._plex_jellyfin_panel)
+
+        # Register Plex/Jellyfin on Mixer + Now Playing (must come after panel creation above)
+        self._mixer_panel.register_source("Plex/Jellyfin", self._plex_jellyfin_panel, "music.png")
+        self._now_playing_panel.register_source("Plex/Jellyfin", self._plex_jellyfin_panel, "music.png")
+
+        # Wire Discord Plex/Jellyfin voice commands → Plex/Jellyfin panel
+        self._discord_panel.plex_jellyfin_command.connect(self._plex_jellyfin_panel.handle_command)
+
+        # 18. Master Scenes - cross-panel scene orchestration
+        self._master_scene_panel = MasterScenePanel(
+            {
+                "spotify": self._spotify_panel,
+                "syrinscape": self._syrinscape_panel,
+                "soundboard": self._soundboard_panel,
+                "youtube": self._youtube_panel,
+                "tidal": self._tidal_panel,
+                "local_music": self._local_music_panel,
+                "plex_jellyfin": self._plex_jellyfin_panel,
+            },
+            self,
+        )
+        self._master_scene_panel.status_message.connect(self._set_status)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._master_scene_panel)  # type: ignore[attr-defined]
+        self.tabifyDockWidget(self._plex_jellyfin_panel, self._master_scene_panel)
+        self._discord_panel.scene_command.connect(self._master_scene_panel.handle_command)
+
         # ── Wire Scheduler ↔ Discord ──────────────────────────────────────────
         # Scheduler → Discord
         self._scheduler_panel.request_channels.connect(
@@ -244,6 +328,7 @@ class MainWindow(QMainWindow):
 
     # Maps dock-widget windowTitle() → icon filename in ui/assets/
     _TAB_ICONS: dict[str, str] = {
+        "Ceres Chat":       "obsidian.png",
         "Vault / Notes":    "obsidian.png",
         "Discord":          "discord.png",
         "Spotify":          "spotify.png",
@@ -253,6 +338,11 @@ class MainWindow(QMainWindow):
         "Browser":          "chrome.png",
         "Tidal":            "tidal.png",
         "Local Music":      "music.png",
+        "Now Playing":      "music.png",
+        "Equalizer":        "music.png",
+        "Visualiser":       "music.png",
+        "Plex / Jellyfin":  "music.png",
+        "Master Scenes":    "music.png",
     }
 
     def _apply_tab_icons(self) -> None:
@@ -294,6 +384,7 @@ class MainWindow(QMainWindow):
         # ── View menu — panel toggles ──
         view_menu = mb.addMenu("&View")
         view_menu.addAction(self._vault_panel.toggleViewAction())
+        view_menu.addAction(self._chat_dock.toggleViewAction())
         # Console is hidden by default; toggle here for power users
         console_action = self._console_panel.toggleViewAction()
         console_action.setText("🖥  Console  (power user)")
@@ -309,12 +400,18 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self._youtube_panel.toggleViewAction())
         view_menu.addAction(self._tidal_panel.toggleViewAction())
         view_menu.addAction(self._local_music_panel.toggleViewAction())
+        view_menu.addAction(self._now_playing_panel.toggleViewAction())
+        view_menu.addAction(self._eq_panel.toggleViewAction())
+        view_menu.addAction(self._visualiser_panel.toggleViewAction())
+        view_menu.addAction(self._plex_jellyfin_panel.toggleViewAction())
+        view_menu.addAction(self._master_scene_panel.toggleViewAction())
         view_menu.addAction(self._mixer_panel.toggleViewAction())
         view_menu.addSeparator()
         self._add_action(view_menu, "Reset Layout", self._reset_layout)
 
         # ── Modules menu ──
         mod_menu = mb.addMenu("&Modules")
+        mod_menu.addAction(self._chat_dock.toggleViewAction())
         mod_menu.addAction(self._discord_panel.toggleViewAction())
         mod_menu.addAction(self._spotify_panel.toggleViewAction())
         mod_menu.addAction(self._soundboard_panel.toggleViewAction())
@@ -325,6 +422,11 @@ class MainWindow(QMainWindow):
         mod_menu.addAction(self._youtube_panel.toggleViewAction())
         mod_menu.addAction(self._tidal_panel.toggleViewAction())
         mod_menu.addAction(self._local_music_panel.toggleViewAction())
+        mod_menu.addAction(self._now_playing_panel.toggleViewAction())
+        mod_menu.addAction(self._eq_panel.toggleViewAction())
+        mod_menu.addAction(self._visualiser_panel.toggleViewAction())
+        mod_menu.addAction(self._plex_jellyfin_panel.toggleViewAction())
+        mod_menu.addAction(self._master_scene_panel.toggleViewAction())
         mod_menu.addAction(self._mixer_panel.toggleViewAction())
 
         # ── Help menu ──
@@ -401,7 +503,22 @@ class MainWindow(QMainWindow):
         self._set_status(f"Note: {path}")
 
     def _refresh_vaults(self) -> None:
-        self._run_command("sync-obsidian", "", self._config)
+        try:
+            obsidian_json_path = get_obsidian_json_path()
+
+            def _save_vaults(_vaults):
+                self._config.save_vaults()
+
+            sync_obsidian_vaults(
+                obsidian_json_path,
+                self._config.vaults,
+                self._config.ignored_vaults,
+                _save_vaults,
+            )
+        except Exception as exc:
+            self._set_status(f"Vault refresh failed: {exc}")
+            self._chat_panel.print_output(f"Vault refresh failed: {exc}")
+            return
         self._vault_panel.refresh_vault_selector()
         self._set_status("Vaults refreshed.")
         self._chat_panel.print_output("Vaults refreshed.")
@@ -417,6 +534,7 @@ class MainWindow(QMainWindow):
 
     def _reset_layout(self) -> None:
         """Re-dock everything to default positions."""
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea,   self._chat_dock)        # type: ignore[attr-defined]
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea,   self._vault_panel)      # type: ignore[attr-defined]
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self._console_panel)    # type: ignore[attr-defined]
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,  self._discord_panel)     # type: ignore[attr-defined]
@@ -429,6 +547,7 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,  self._youtube_panel)     # type: ignore[attr-defined]
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,  self._tidal_panel)            # type: ignore[attr-defined]
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,  self._local_music_panel)    # type: ignore[attr-defined]
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,  self._now_playing_panel)   # type: ignore[attr-defined]
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea,   self._mixer_panel)           # type: ignore[attr-defined]
         self.tabifyDockWidget(self._discord_panel,    self._spotify_panel)
         self.tabifyDockWidget(self._spotify_panel,    self._soundboard_panel)
@@ -439,6 +558,15 @@ class MainWindow(QMainWindow):
         self.tabifyDockWidget(self._syrinscape_panel, self._youtube_panel)
         self.tabifyDockWidget(self._youtube_panel,    self._tidal_panel)
         self.tabifyDockWidget(self._tidal_panel,      self._local_music_panel)
+        self.tabifyDockWidget(self._local_music_panel, self._now_playing_panel)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,  self._eq_panel)            # type: ignore[attr-defined]
+        self.tabifyDockWidget(self._now_playing_panel, self._eq_panel)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,  self._visualiser_panel)  # type: ignore[attr-defined]
+        self.tabifyDockWidget(self._eq_panel, self._visualiser_panel)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,  self._plex_jellyfin_panel)  # type: ignore[attr-defined]
+        self.tabifyDockWidget(self._visualiser_panel, self._plex_jellyfin_panel)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,  self._master_scene_panel)  # type: ignore[attr-defined]
+        self.tabifyDockWidget(self._plex_jellyfin_panel, self._master_scene_panel)
         self._discord_panel.raise_()
         self._apply_tab_icons()
 
@@ -451,30 +579,28 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
         """Close all docks explicitly to avoid QThread-destroyed warnings."""
+        self._save_geometry()
         for dock in self.findChildren(QDockWidget):
             dock.close()
-        self._restore_geometry()   # save geometry on close
         super().closeEvent(event)
 
     # ── Geometry persistence ────────────────────────────────────────────────────
 
     def _restore_geometry(self) -> None:
-        """Save or restore window geometry and dock state via QSettings."""
+        """Restore window geometry and dock state via QSettings."""
         settings = QSettings("ProjectCeres", "GMAssistant")
-        # On close we save; on init we just initialise the settings object.
-        # Called once at startup (no-op — state not yet saved) and once on close.
-        if not self.isVisible():
-            # Save on close
-            settings.setValue("geometry", self.saveGeometry())
-            settings.setValue("windowState", self.saveState())
-        else:
-            # Restore on startup if saved state exists
-            geo = settings.value("geometry")
-            state = settings.value("windowState")
-            if geo:
-                self.restoreGeometry(geo)
-            if state:
-                self.restoreState(state)
+        geo = settings.value("geometry")
+        state = settings.value("windowState")
+        if geo:
+            self.restoreGeometry(geo)
+        if state:
+            self.restoreState(state)
+
+    def _save_geometry(self) -> None:
+        """Save window geometry and dock state via QSettings."""
+        settings = QSettings("ProjectCeres", "GMAssistant")
+        settings.setValue("geometry", self.saveGeometry())
+        settings.setValue("windowState", self.saveState())
 
     # ── Help / About ────────────────────────────────────────────────────────────
 
@@ -492,22 +618,25 @@ class MainWindow(QMainWindow):
             "&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"
             "!tidalplay, !tidalstop, !tidalpause, !tidalsearch (Tidal)<br>"
             "&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"
-            "!localplay, !localstop, !localpause, !localnext (Local Music)<br>"
-            "<b>Wake words:</b> Veras / Chroma — add bookmark, append note, "
-            "add session marker, play &lt;track&gt; on youtube/tidal/locally<br><br>"
-            "Full command list: see README.md"
+            "!localplay, !localstop, !localpause, !localsearch (Local Music)<br>"
+            "&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"
+            "!plexplay, !plexstop, !plexpause (Plex)<br>"
+            "&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"
+            "!jellyplay, !jellystop, !jellypause (Jellyfin)<br>"
+            "&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"
+            "!scene &lt;name or number&gt;, !scenestop (Master Scenes)<br>"
+            "<b>Wake words:</b> 'Hey Ceres' or 'Okay Ceres' (voice commands)<br>"
         )
-        QMessageBox.information(self, "Command Reference", text)
+        QMessageBox.information(self, "Help", text)
 
     def _show_about(self) -> None:
-        """Display the About dialog."""
+        """Display application version and credits."""
         QMessageBox.about(
             self,
-            f"About {self.APP_NAME}",
-            f"<b>{self.APP_NAME}</b><br>"
-            f"Version {self.VERSION}<br><br>"
-            "A modular GM Assistant for tabletop RPG game masters.<br>"
-            "Connects Discord, Obsidian, Fantasy Grounds Unity, Spotify,<br>"
-            "YouTube, Tidal, Syrinscape, and local audio — all in one Winamp-style interface.<br><br>"
-            "<i>Project Ceres</i>",
+            "About GM Assistant",
+            "<b>Project Ceres — GM Assistant</b><br>"
+            "Version 0.1.0 (development)<br><br>"
+            "A modular assistant for tabletop RPG Game Masters.<br>"
+            "Integrates Discord, Obsidian, Fantasy Grounds Unity,<br>"
+            "Spotify, Tidal, YouTube, Local Music, and more.",
         )

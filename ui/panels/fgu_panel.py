@@ -35,7 +35,7 @@ try:
     from PyQt5.QtWidgets import (
         QDockWidget, QWidget, QVBoxLayout, QHBoxLayout,
         QPushButton, QLabel, QComboBox, QTreeWidget, QTreeWidgetItem,
-        QTabWidget, QLineEdit, QFileDialog, QSizePolicy,
+        QTabWidget, QLineEdit, QFileDialog, QSizePolicy, QCheckBox,
         QMessageBox, QTextEdit, QSplitter, QApplication,
     )
     from PyQt5.QtCore import Qt, QTimer, QSettings, pyqtSignal as Signal
@@ -44,7 +44,7 @@ except ImportError:
     from PySide6.QtWidgets import (  # type: ignore
         QDockWidget, QWidget, QVBoxLayout, QHBoxLayout,
         QPushButton, QLabel, QComboBox, QTreeWidget, QTreeWidgetItem,
-        QTabWidget, QLineEdit, QFileDialog, QSizePolicy,
+        QTabWidget, QLineEdit, QFileDialog, QSizePolicy, QCheckBox,
         QMessageBox, QTextEdit, QSplitter, QApplication,
     )
     from PySide6.QtCore import Qt, QTimer, QSettings, Signal  # type: ignore
@@ -60,11 +60,18 @@ from pantheon.messor.fgu_character import (
     import_entity_to_vault,
     character_to_markdown, npc_to_markdown, item_to_markdown,
 )
+from pantheon.messor import (
+    import_campaign_entities,
+    export_entities_to_xml,
+    read_fgu_notes_in_vault,
+)
 
 # Tab indices
 TAB_CHARS = 0
 TAB_NPCS  = 1
 TAB_ITEMS = 2
+TAB_IMPORT = 3
+TAB_EXPORT = 4
 
 # TreeWidget column indices
 COL_NAME   = 0
@@ -102,6 +109,7 @@ class FGUPanel(QDockWidget):
         self._run_command = run_command
         self._parser: Optional[FGUCampaignParser] = None
         self._campaigns: Dict[str, Path] = {}
+        self._export_path: str = ""
 
         self._settings = QSettings("ProjectCeres", "GMAssistant")
 
@@ -162,6 +170,8 @@ class FGUPanel(QDockWidget):
         self._tabs.addTab(self._wrap_tab(self._char_tree),  "🧙 Characters")
         self._tabs.addTab(self._wrap_tab(self._npc_tree),   "👹 NPCs")
         self._tabs.addTab(self._wrap_tab(self._item_tree),  "🗡 Items")
+        self._tabs.addTab(self._build_import_tab(), "📥 Import")
+        self._tabs.addTab(self._build_export_tab(), "📤 Export")
 
         layout.addWidget(self._tabs)
 
@@ -219,6 +229,218 @@ class FGUPanel(QDockWidget):
         v.setContentsMargins(0, 4, 0, 0)
         v.addWidget(tree)
         return w
+
+    def _build_import_tab(self) -> QWidget:
+        """Build the campaign import tab UI."""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+
+        description = QLabel(
+            "Import all entities from the selected campaign into your active "
+            "Obsidian vault as structured notes."
+        )
+        description.setWordWrap(True)
+        layout.addWidget(description)
+
+        checks_row = QHBoxLayout()
+        checks_row.setSpacing(10)
+        self._import_npcs_cb = QCheckBox("NPCs")
+        self._import_pcs_cb = QCheckBox("PCs")
+        self._import_items_cb = QCheckBox("Items")
+        self._import_encounters_cb = QCheckBox("Encounters")
+        self._import_notes_cb = QCheckBox("Notes")
+        for checkbox in (
+            self._import_npcs_cb,
+            self._import_pcs_cb,
+            self._import_items_cb,
+            self._import_encounters_cb,
+            self._import_notes_cb,
+        ):
+            checkbox.setChecked(True)
+            checks_row.addWidget(checkbox)
+        checks_row.addStretch(1)
+        layout.addLayout(checks_row)
+
+        self._import_tab_button = QPushButton("Import")
+        self._import_tab_button.setStyleSheet(
+            f"background: {SUCCESS}; color: white; font-weight: bold;"
+        )
+        self._import_tab_button.clicked.connect(self._on_import_clicked)
+        layout.addWidget(self._import_tab_button)
+
+        self._import_log = QTextEdit()
+        self._import_log.setReadOnly(True)
+        self._import_log.setStyleSheet(
+            f"background: {PANEL}; color: {TEXT}; font-family: Consolas, monospace;"
+        )
+        layout.addWidget(self._import_log, 1)
+        return tab
+
+    def _build_export_tab(self) -> QWidget:
+        """Build the campaign export tab UI."""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+
+        description = QLabel(
+            "Export Obsidian notes tagged fgu_entity: true back to a "
+            "Fantasy Grounds-compatible XML file."
+        )
+        description.setWordWrap(True)
+        layout.addWidget(description)
+
+        path_row = QHBoxLayout()
+        self._choose_export_btn = QPushButton("Choose Output File...")
+        self._choose_export_btn.clicked.connect(self._on_choose_export_file)
+        path_row.addWidget(self._choose_export_btn)
+
+        self._export_path_edit = QLineEdit()
+        self._export_path_edit.setReadOnly(True)
+        self._export_path_edit.setPlaceholderText("No output file selected")
+        path_row.addWidget(self._export_path_edit, 1)
+        layout.addLayout(path_row)
+
+        self._export_button = QPushButton("Export")
+        self._export_button.setStyleSheet(
+            f"background: {WARNING}; color: white; font-weight: bold;"
+        )
+        self._export_button.clicked.connect(self._on_export_clicked)
+        layout.addWidget(self._export_button)
+
+        self._export_log = QTextEdit()
+        self._export_log.setReadOnly(True)
+        self._export_log.setStyleSheet(
+            f"background: {PANEL}; color: {TEXT}; font-family: Consolas, monospace;"
+        )
+        layout.addWidget(self._export_log, 1)
+        return tab
+
+    def _on_choose_export_file(self) -> None:
+        """Choose output XML path for export."""
+        selected, _ = QFileDialog.getSaveFileName(
+            self,
+            "Choose Export Output",
+            self._export_path or "",
+            "XML files (*.xml)",
+        )
+        if not selected:
+            return
+        self._export_path = selected
+        self._export_path_edit.setText(selected)
+
+    def _on_import_clicked(self) -> None:
+        """Import selected entity types from the active campaign."""
+        campaign_data = self._campaign_combo.currentData()
+        if not campaign_data:
+            QMessageBox.warning(
+                self,
+                "No Campaign Selected",
+                "Select a campaign before importing.",
+            )
+            return
+
+        selected_types = []
+        if self._import_npcs_cb.isChecked():
+            selected_types.append("npc")
+        if self._import_pcs_cb.isChecked():
+            selected_types.append("pc")
+        if self._import_items_cb.isChecked():
+            selected_types.append("item")
+        if self._import_encounters_cb.isChecked():
+            selected_types.append("encounter")
+        if self._import_notes_cb.isChecked():
+            selected_types.append("note")
+
+        entity_types = tuple(selected_types)
+        if not entity_types:
+            QMessageBox.warning(
+                self,
+                "Nothing Selected",
+                "Choose at least one entity type to import.",
+            )
+            return
+
+        self._import_log.clear()
+        self._import_log.append("Starting import...")
+        QApplication.processEvents()
+        try:
+            imported_count, errors = import_campaign_entities(
+                Path(campaign_data),
+                self._config,
+                entity_types=entity_types,
+            )
+            for idx in range(1, imported_count + 1):
+                self._import_log.append(f"Imported entity {idx}")
+            for err in errors:
+                self._import_log.append(f"ERROR: {err}")
+            summary = f"Imported {imported_count} entities. Errors: {len(errors)}"
+            self._import_log.append(summary)
+            if errors:
+                QMessageBox.warning(self, "Import Completed with Errors", summary)
+            else:
+                QMessageBox.information(self, "Import Completed", summary)
+        except Exception as exc:
+            self._import_log.append(f"ERROR: {exc}")
+            QMessageBox.warning(self, "Import Failed", str(exc))
+
+    def _on_export_clicked(self) -> None:
+        """Export FGU-tagged vault notes to standalone XML."""
+        campaign_data = self._campaign_combo.currentData()
+        if not campaign_data:
+            QMessageBox.warning(
+                self,
+                "No Campaign Selected",
+                "Select a campaign before exporting.",
+            )
+            return
+        if not self._export_path:
+            QMessageBox.warning(
+                self,
+                "No Output File",
+                "Choose an output XML file before exporting.",
+            )
+            return
+
+        self._export_log.clear()
+        self._export_log.append("Scanning vault for FGU notes...")
+        QApplication.processEvents()
+
+        try:
+            if (
+                not self._config
+                or not self._config.current_vault
+                or self._config.current_vault not in (self._config.vaults or {})
+            ):
+                QMessageBox.warning(
+                    self,
+                    "No Vault Selected",
+                    "Please select an Obsidian vault in the Vault / Notes panel first.",
+                )
+                return
+            vault_path = Path(self._config.vaults[self._config.current_vault])
+            notes_with_frontmatter = read_fgu_notes_in_vault(vault_path)
+            note_paths = [path for path, _fm in notes_with_frontmatter]
+            self._export_log.append(f"Found {len(note_paths)} FGU note(s).")
+            exported_count, errors = export_entities_to_xml(
+                note_paths,
+                Path(self._export_path),
+            )
+            for note_path in note_paths:
+                self._export_log.append(f"Included: {note_path.name}")
+            for err in errors:
+                self._export_log.append(f"ERROR: {err}")
+            summary = f"Exported {exported_count} entities. Errors: {len(errors)}"
+            self._export_log.append(summary)
+            if errors:
+                QMessageBox.warning(self, "Export Completed with Errors", summary)
+            else:
+                QMessageBox.information(self, "Export Completed", summary)
+        except Exception as exc:
+            self._export_log.append(f"ERROR: {exc}")
+            QMessageBox.warning(self, "Export Failed", str(exc))
 
     # ── Campaign detection ─────────────────────────────────────────────────────
 
@@ -417,7 +639,11 @@ class FGUPanel(QDockWidget):
 
     def _current_tree(self) -> QTreeWidget:
         tab = self._tabs.currentIndex()
-        return [self._char_tree, self._npc_tree, self._item_tree][tab]
+        return {
+            TAB_CHARS: self._char_tree,
+            TAB_NPCS: self._npc_tree,
+            TAB_ITEMS: self._item_tree,
+        }.get(tab, self._char_tree)
 
     def _resolve_entity(self, fgu_id: str, kind: str):
         """Return the parsed entity object from the parser."""

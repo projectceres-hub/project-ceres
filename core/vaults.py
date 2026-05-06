@@ -57,7 +57,7 @@ def add_vault(
     """
     name = os.path.basename(path)
     if name in vaults:
-        print("A vault with that name already exists.")
+        print("Error: A vault with that name already exists.")
         return current_vault
 
     vaults[name] = path
@@ -102,7 +102,7 @@ def switch_vault(
             print(f"Switched to vault '{k}'.")
             return current_vault
 
-    print(f"The correct syntax is 'switch (number or vault name)'. You entered: '{name_or_num}'. Use the 'vaults' command to see available vaults.")
+    print(f"Hint: Use 'switch (number or vault name)'. You entered: '{name_or_num}'. Use the 'vaults' command to see available vaults.")
     return None
 
 def list_vaults(
@@ -122,7 +122,7 @@ def list_vaults(
         Dictionary mapping numbers to vault names
     """
     if not current_vault or current_vault not in vaults:
-        print("No current vault set.")
+        print("Error: No vault is currently set.")
         return {}
 
     print("Current Vault:")
@@ -162,26 +162,6 @@ def load_vaults() -> Dict[str, str]:
             print(f"Error: Unexpected error loading vaults: {e}")
             return {}
     return {}
-
-def save_vaults(vaults: Dict[str, str]) -> None:
-    """
-    Save vaults dictionary to vaults.json file.
-    
-    Args:
-        vaults: Dictionary mapping vault names to paths
-    """
-    try:
-        with open("vaults.json", "w", encoding="utf-8") as f:
-            json.dump(vaults, f, ensure_ascii=False, indent=2)
-    except PermissionError as e:
-        print(f"Error: Permission denied writing to vaults.json: {e}")
-        print("Hint: Check that you have write permissions in the current directory.")
-    except OSError as e:
-        print(f"Error: Failed to save vaults.json: {e}")
-        print("Hint: Check that the current directory is writable and disk space is available.")
-    except Exception as e:
-        print(f"Error: Unexpected error saving vaults: {e}")
-        print("Hint: Check file permissions and disk space.")
 
 def sync_obsidian_vaults(
     obsidian_json_path: str,

@@ -214,12 +214,12 @@ def cmd_editnote(
         if 0 <= idx < len(files):
             note_file = files[idx]
         else:
-            print("Invalid selection.")
+            print("Error: Invalid selection.")
             return
     except ValueError:
         note_file = next((f for f in files if f.lower() == selection.lower()), None)
         if not note_file:
-            print("Note not found.")
+            print("Error: Note not found.")
             return
 
     instruction = prompt_input("What do you want ChatGPT to do with this note? (e.g., summarize, fix grammar):\n").strip()
@@ -229,7 +229,7 @@ def cmd_editnote(
     try:
         gpt_response = gpt_client.chat(prompt)
     except Exception as e:
-        print(f"Error communicating with ChatGPT: {e}")
+        print(f"Error: Failed to communicate with ChatGPT: {e}")
         return
 
     print(f"\n--- ChatGPT Response ---\n{gpt_response}\n")

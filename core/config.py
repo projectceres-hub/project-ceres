@@ -7,6 +7,7 @@ replacing global variables with a clean, dependency-injectable configuration obj
 
 import os
 import json
+import threading
 from pathlib import Path
 from typing import Dict, List, Optional, Callable, Tuple
 from dataclasses import dataclass, field
@@ -44,6 +45,18 @@ class Config:
     console_hidden_default: bool = True     # hide the console panel on startup
     soundboard_folders: List[str] = field(default_factory=list)  # user-added SFX folders
 
+    # Plex / Jellyfin
+    plex_jellyfin_server_type: str = "Jellyfin"   # "Plex" | "Jellyfin"
+    plex_jellyfin_url: str = ""                   # e.g. http://localhost:8096
+    # Token is NOT stored here — lives in variables.env as PLEX_JELLYFIN_TOKEN
+
+    # Equalizer
+    eq_enabled: bool = False
+    eq_preset: str = "Flat"
+    eq_bands: List[float] = field(default_factory=lambda: [0.0] * 10)
+    # bands index → Hz: [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
+    # values: -12.0 to +12.0 dB; 0.0 = flat
+
     # Input provider — swappable callable used by all interactive command prompts.
     # Signature: (prompt_message: str) -> str
     #
@@ -55,7 +68,13 @@ class Config:
     # this via its prompt_input_func parameter (already the case for most handlers).
     # Never call input() directly in new code; always go through this provider.
     input_provider: Optional[Callable[[str], str]] = field(default=None, repr=False)
-    
+
+    # Thread-safety lock — guards vaults, ignored_vaults, and commands against
+    # concurrent reads (scheduler thread) / writes (main thread).
+    _lock: threading.RLock = field(
+        default_factory=threading.RLock, repr=False, compare=False
+    )
+
     def __post_init__(self) -> None:
         """Initialize after dataclass creation."""
         # Ensure default_vault_name matches default_vault_path if not explicitly set
@@ -65,7 +84,7 @@ class Config:
     def load_settings(self) -> None:
         """
         Load settings from settings.json file.
-        
+
         If file doesn't exist, sets current_vault to first vault if available.
         Also loads OpenAI key from environment if not set.
         """
@@ -73,6 +92,7 @@ class Config:
             try:
                 with open("settings.json", "r", encoding="utf-8") as f:
                     data = json.load(f)
+                with self._lock:
                     self.current_vault = data.get("current_vault")
                     self.ignored_vaults = data.get("ignored_vaults", [])
                     # Load optional config fields
@@ -108,29 +128,46 @@ class Config:
                         self.console_hidden_default = data.get("console_hidden_default", True)
                     if "soundboard_folders" in data:
                         self.soundboard_folders = data.get("soundboard_folders", [])
+                    if "plex_jellyfin_server_type" in data:
+                        self.plex_jellyfin_server_type = str(data.get("plex_jellyfin_server_type", "Jellyfin"))
+                    if "plex_jellyfin_url" in data:
+                        self.plex_jellyfin_url = str(data.get("plex_jellyfin_url", ""))
+                    if "eq_enabled" in data:
+                        self.eq_enabled = bool(data.get("eq_enabled", False))
+                    if "eq_preset" in data:
+                        self.eq_preset = str(data.get("eq_preset", "Flat"))
+                    if "eq_bands" in data:
+                        raw = data.get("eq_bands", [0.0] * 10)
+                        if isinstance(raw, list) and len(raw) == 10:
+                            self.eq_bands = [float(v) for v in raw]
             except json.JSONDecodeError as e:
                 print(f"Error: Failed to parse settings.json: {e}")
                 print("Hint: The settings.json file may be corrupted. Check its format.")
-                self.current_vault = next(iter(self.vaults), None)
-                self.ignored_vaults = []
+                with self._lock:
+                    self.current_vault = next(iter(self.vaults), None)
+                    self.ignored_vaults = []
             except PermissionError as e:
                 print(f"Error: Permission denied reading settings.json: {e}")
                 print("Hint: Check that you have read permissions for settings.json")
-                self.current_vault = next(iter(self.vaults), None)
-                self.ignored_vaults = []
+                with self._lock:
+                    self.current_vault = next(iter(self.vaults), None)
+                    self.ignored_vaults = []
             except OSError as e:
                 print(f"Error: Failed to read settings.json: {e}")
                 print("Hint: Check that the file exists and is accessible.")
-                self.current_vault = next(iter(self.vaults), None)
-                self.ignored_vaults = []
+                with self._lock:
+                    self.current_vault = next(iter(self.vaults), None)
+                    self.ignored_vaults = []
             except Exception as e:
                 print(f"Error: Unexpected error loading settings: {e}")
+                with self._lock:
+                    self.current_vault = next(iter(self.vaults), None)
+                    self.ignored_vaults = []
+        else:
+            with self._lock:
                 self.current_vault = next(iter(self.vaults), None)
                 self.ignored_vaults = []
-        else:
-            self.current_vault = next(iter(self.vaults), None)
-            self.ignored_vaults = []
-        
+
         # Load OpenAI key from environment if not set
         if self.openai_key is None:
             try:
@@ -140,18 +177,24 @@ class Config:
             except Exception as e:
                 print(f"Warning: Failed to load OpenAI key from environment: {e}")
                 print(f"Hint: Check that '{self.env_file}' exists and contains OPENAI_API_KEY")
-    
+
+        # Normalize empty key to None so the rest of the app can treat None as "key not set"
+        if self.openai_key is not None and self.openai_key.strip() == "":
+            print("Warning: OPENAI_API_KEY is set but empty. GPT features will not work.")
+            print("Hint: Set a valid key in your variables.env file or in settings.json.")
+            self.openai_key = None
+
     def save_settings(self) -> None:
         """
         Save current settings to settings.json file.
-        
+
         Note: openai_key is NOT saved to file for security reasons.
         """
         try:
-            with open("settings.json", "w", encoding="utf-8") as f:
-                json.dump({
+            with self._lock:
+                snapshot = {
                     "current_vault": self.current_vault,
-                    "ignored_vaults": self.ignored_vaults,
+                    "ignored_vaults": list(self.ignored_vaults),
                     "default_model": self.default_model,
                     "templates_remote_url": self.templates_remote_url,
                     "templates_local_path": str(self.templates_local_path) if self.templates_local_path else None,
@@ -160,8 +203,15 @@ class Config:
                     "fgu_campaigns_root": str(self.fgu_campaigns_root) if self.fgu_campaigns_root else None,
                     "voice_commands_enabled": self.voice_commands_enabled,
                     "console_hidden_default": self.console_hidden_default,
-                    "soundboard_folders": self.soundboard_folders,
-                }, f)
+                    "soundboard_folders": list(self.soundboard_folders),
+                    "plex_jellyfin_server_type": self.plex_jellyfin_server_type,
+                    "plex_jellyfin_url":         self.plex_jellyfin_url,
+                    "eq_enabled":       self.eq_enabled,
+                    "eq_preset":        self.eq_preset,
+                    "eq_bands":         list(self.eq_bands),
+                }
+            with open("settings.json", "w", encoding="utf-8") as f:
+                json.dump(snapshot, f)
         except PermissionError as e:
             print(f"Error: Permission denied writing to settings.json: {e}")
             print("Hint: Check that you have write permissions in the current directory.")
@@ -175,8 +225,10 @@ class Config:
     def save_vaults(self) -> None:
         """Save vaults dictionary to vaults.json file."""
         try:
+            with self._lock:
+                vaults_snapshot = dict(self.vaults)
             with open("vaults.json", "w", encoding="utf-8") as f:
-                json.dump(self.vaults, f, ensure_ascii=False, indent=2)
+                json.dump(vaults_snapshot, f, ensure_ascii=False, indent=2)
         except PermissionError as e:
             print(f"Error: Permission denied writing to vaults.json: {e}")
             print("Hint: Check that you have write permissions in the current directory.")
@@ -186,15 +238,8 @@ class Config:
         except Exception as e:
             print(f"Error: Unexpected error saving vaults: {e}")
             print("Hint: Check file permissions and disk space.")
-    
-    def register_command(self, name: str, func: Callable, help_text: str) -> None:
-        """
-        Register a command in the command registry.
-        
-        Args:
-            name: Command name
-            func: Command function
-            help_text: Help text for the command
-        """
-        self.commands[name] = (func, help_text)
 
+    def register_command(self, name: str, func: Callable[[str], None], help_text: str) -> None:
+        """Register a command handler in the shared command registry."""
+        with self._lock:
+            self.commands[name.lower()] = (func, help_text)

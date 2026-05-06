@@ -27,6 +27,7 @@ Layout
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -37,7 +38,7 @@ try:
         QDockWidget, QWidget, QVBoxLayout, QHBoxLayout,
         QPushButton, QLabel, QComboBox, QLineEdit, QTreeWidget,
         QTreeWidgetItem, QSizePolicy, QMessageBox, QInputDialog, QMenu,
-        QApplication,
+        QApplication, QStackedWidget, QTextBrowser, QScrollArea,
     )
     from PyQt5.QtCore import Qt, QTimer
     from PyQt5.QtGui import QColor
@@ -48,7 +49,7 @@ except ImportError:
         QDockWidget, QWidget, QVBoxLayout, QHBoxLayout,
         QPushButton, QLabel, QComboBox, QLineEdit, QTreeWidget,
         QTreeWidgetItem, QSizePolicy, QMessageBox, QInputDialog, QMenu,
-        QApplication,
+        QApplication, QStackedWidget, QTextBrowser, QScrollArea,
     )
     from PySide6.QtCore import Qt, QTimer, Signal  # type: ignore
     from PySide6.QtGui import QColor  # type: ignore
@@ -79,6 +80,7 @@ class VaultNotesPanel(QDockWidget):
         self._config = config
         self._run_command = run_command
         self._current_vault_path: Optional[Path] = None
+        self._current_note_path: Optional[Path] = None  # note currently open in viewer
 
         self.setObjectName("VaultNotesPanel")
         self.setAllowedAreas(
@@ -101,8 +103,23 @@ class VaultNotesPanel(QDockWidget):
     def _build_ui(self) -> None:
         container = QWidget()
         root_layout = QVBoxLayout(container)
-        root_layout.setContentsMargins(6, 6, 6, 6)
-        root_layout.setSpacing(5)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
+
+        self._stack = QStackedWidget()
+        self._stack.addWidget(self._build_browser_page())  # index 0
+        self._stack.addWidget(self._build_viewer_page())  # index 1
+
+        root_layout.addWidget(self._stack)
+        self.setWidget(container)
+
+    # ── Page builders ──────────────────────────────────────────────────────────
+
+    def _build_browser_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(5)
 
         # Vault selector row
         vault_row = QHBoxLayout()
@@ -125,14 +142,14 @@ class VaultNotesPanel(QDockWidget):
         refresh_btn.clicked.connect(self._refresh_tree)
         vault_row.addWidget(refresh_btn)
 
-        root_layout.addLayout(vault_row)
+        layout.addLayout(vault_row)
 
         # Search filter
         self._search_box = QLineEdit()
         self._search_box.setPlaceholderText("🔍  Filter notes…")
         self._search_box.setClearButtonEnabled(True)
         self._search_box.textChanged.connect(self._apply_filter)
-        root_layout.addWidget(self._search_box)
+        layout.addWidget(self._search_box)
 
         # Note tree
         self._tree = QTreeWidget()
@@ -143,7 +160,7 @@ class VaultNotesPanel(QDockWidget):
         self._tree.itemDoubleClicked.connect(self._on_item_double_clicked)
         self._tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._tree.customContextMenuRequested.connect(self._show_context_menu)
-        root_layout.addWidget(self._tree)
+        layout.addWidget(self._tree)
 
         # Action buttons
         btn_row = QHBoxLayout()
@@ -160,8 +177,8 @@ class VaultNotesPanel(QDockWidget):
         new_folder_btn.clicked.connect(self._cmd_new_folder)
         btn_row.addWidget(new_folder_btn)
 
-        open_btn = QPushButton("✎ Open")
-        open_btn.setToolTip("Open selected note in Obsidian")
+        open_btn = QPushButton("✎ Obsidian")
+        open_btn.setToolTip("Open selected note in Obsidian (external)")
         open_btn.clicked.connect(self._cmd_open_selected)
         btn_row.addWidget(open_btn)
 
@@ -170,8 +187,52 @@ class VaultNotesPanel(QDockWidget):
         search_btn.clicked.connect(self._cmd_full_text_search)
         btn_row.addWidget(search_btn)
 
-        root_layout.addLayout(btn_row)
-        self.setWidget(container)
+        layout.addLayout(btn_row)
+        return page
+
+    def _build_viewer_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(4)
+
+        # Top bar: back button + note title
+        top_row = QHBoxLayout()
+        top_row.setSpacing(6)
+
+        back_btn = QPushButton("← Back")
+        back_btn.setFixedWidth(70)
+        back_btn.setToolTip("Return to vault browser")
+        back_btn.clicked.connect(self._show_browser)
+        top_row.addWidget(back_btn)
+
+        self._viewer_title = QLabel("")
+        self._viewer_title.setStyleSheet(
+            f"color: {ACCENT}; font-weight: bold; font-size: 13px;"
+        )
+        self._viewer_title.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        top_row.addWidget(self._viewer_title)
+
+        open_ext_btn = QPushButton("✎ Obsidian")
+        open_ext_btn.setFixedWidth(80)
+        open_ext_btn.setToolTip("Open this note in Obsidian (external)")
+        open_ext_btn.clicked.connect(self._open_current_in_obsidian)
+        top_row.addWidget(open_ext_btn)
+
+        layout.addLayout(top_row)
+
+        # Markdown viewer
+        self._note_browser = QTextBrowser()
+        self._note_browser.setOpenExternalLinks(True)
+        self._note_browser.setReadOnly(True)
+        self._note_browser.setStyleSheet(
+            "QTextBrowser { background: #1e1e2e; color: #cdd6f4; "
+            "font-family: Segoe UI, Arial, sans-serif; font-size: 13px; "
+            "border: 1px solid #313244; border-radius: 4px; padding: 8px; }"
+        )
+        layout.addWidget(self._note_browser)
+
+        return page
 
     # ── Vault selector ─────────────────────────────────────────────────────────
 
@@ -278,12 +339,13 @@ class VaultNotesPanel(QDockWidget):
 
     # ── Interaction ────────────────────────────────────────────────────────────
 
-    def _on_item_double_clicked(self, item: QTreeWidgetItem, column: int) -> None:
+    def _on_item_double_clicked(self, item: QTreeWidgetItem, _col: int) -> None:
         kind = item.data(0, Qt.ItemDataRole.UserRole + 1)
         path = item.data(0, Qt.ItemDataRole.UserRole)
         if kind == "note" and path:
-            self.note_opened.emit(path)
-            self.status_message.emit(f"Opened: {Path(path).name}")
+            self._open_note_viewer(Path(path))
+        elif kind == "folder":
+            item.setExpanded(not item.isExpanded())
 
     def _show_context_menu(self, pos) -> None:
         item = self._tree.itemAt(pos)
@@ -291,6 +353,11 @@ class VaultNotesPanel(QDockWidget):
         if item:
             kind = item.data(0, Qt.ItemDataRole.UserRole + 1)
             if kind == "note":
+                path = item.data(0, Qt.ItemDataRole.UserRole)
+                menu.addAction(
+                    "📖  Preview note",
+                    lambda p=path: self._open_note_viewer(Path(p)),
+                )
                 menu.addAction("✎  Open in Obsidian", self._cmd_open_selected)
                 menu.addAction("📋  Copy path", lambda: self._copy_path(item))
                 menu.addSeparator()
@@ -305,6 +372,81 @@ class VaultNotesPanel(QDockWidget):
         if path:
             QApplication.clipboard().setText(path)
             self.status_message.emit(f"Copied: {path}")
+
+    # ── Note viewer ────────────────────────────────────────────────────────────
+
+    def _open_note_viewer(self, path: Path) -> None:
+        """Load *path* into the embedded viewer and switch to it."""
+        self._current_note_path = path
+        self._viewer_title.setText(path.stem)
+        self.note_opened.emit(str(path))
+
+        try:
+            raw = path.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            raw = f"*Could not read file:* {exc}"
+
+        rendered = False
+
+        # Attempt 1: QTextBrowser.setMarkdown (Qt 5.14+)
+        if hasattr(self._note_browser, "setMarkdown"):
+            try:
+                self._note_browser.setMarkdown(raw)
+                rendered = True
+            except Exception:
+                pass
+
+        # Attempt 2: Python 'markdown' library → HTML
+        if not rendered:
+            try:
+                import markdown as md_lib
+
+                html = md_lib.markdown(raw, extensions=["extra", "nl2br"])
+                self._note_browser.setHtml(
+                    f"<html><body style='background:#1e1e2e;color:#cdd6f4;"
+                    f"font-family:Segoe UI,Arial,sans-serif;font-size:13px'>"
+                    f"{html}</body></html>"
+                )
+                rendered = True
+            except ImportError:
+                pass
+
+        # Fallback: plain text
+        if not rendered:
+            self._note_browser.setPlainText(raw)
+
+        self._note_browser.verticalScrollBar().setValue(0)
+        self._stack.setCurrentIndex(1)
+        self.status_message.emit(f"Viewing: {path.name}")
+
+    def _show_browser(self) -> None:
+        """Return to the vault browser page."""
+        self._stack.setCurrentIndex(0)
+        self._current_note_path = None
+
+    def _open_current_in_obsidian(self) -> None:
+        """Open the currently-viewed note in Obsidian (external)."""
+        if self._current_note_path:
+            self._open_path_external(self._current_note_path)
+
+    def _open_path_external(self, path: Path) -> None:
+        """Open *path* with the OS default application."""
+        try:
+            if sys.platform == "win32":
+                os.startfile(str(path))          # type: ignore[attr-defined]
+            elif sys.platform == "darwin":
+                import subprocess
+                subprocess.Popen(["open", str(path)])
+            else:
+                import subprocess
+                subprocess.Popen(["xdg-open", str(path)])
+            self.status_message.emit(f"Opened: {path.name}")
+        except Exception as exc:
+            try:
+                from PyQt5.QtWidgets import QMessageBox as _QMB
+            except ImportError:
+                from PySide6.QtWidgets import QMessageBox as _QMB  # type: ignore
+            _QMB.critical(self, "Open Failed", str(exc))
 
     # ── Backend command helpers ────────────────────────────────────────────────
 
@@ -337,17 +479,7 @@ class VaultNotesPanel(QDockWidget):
         kind = item.data(0, Qt.ItemDataRole.UserRole + 1)
         if kind != "note" or not path:
             return
-        try:
-            import subprocess
-            if sys.platform == "win32":
-                os.startfile(path)  # type: ignore[attr-defined]
-            elif sys.platform == "darwin":
-                subprocess.Popen(["open", path])
-            else:
-                subprocess.Popen(["xdg-open", path])
-            self.status_message.emit(f"Opened: {Path(path).name}")
-        except Exception as e:
-            QMessageBox.critical(self, "Open Failed", str(e))
+        self._open_path_external(Path(path))
 
     def _cmd_full_text_search(self) -> None:
         query, ok = QInputDialog.getText(self, "Full-Text Search", "Search notes:")

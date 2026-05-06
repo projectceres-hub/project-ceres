@@ -29,7 +29,7 @@ try:
         QListWidget, QListWidgetItem, QStackedWidget, QLabel,
         QLineEdit, QPushButton, QCheckBox, QFileDialog, QFrame,
         QSizePolicy, QAbstractItemView, QDialogButtonBox,
-        QComboBox, QSpinBox,
+        QComboBox, QSpinBox, QScrollArea,
     )
     from PyQt5.QtCore import Qt, pyqtSignal as Signal
     from PyQt5.QtGui import QFont, QIcon, QPixmap
@@ -39,7 +39,7 @@ except ImportError:
         QListWidget, QListWidgetItem, QStackedWidget, QLabel,
         QLineEdit, QPushButton, QCheckBox, QFileDialog, QFrame,
         QSizePolicy, QAbstractItemView, QDialogButtonBox,
-        QComboBox, QSpinBox,
+        QComboBox, QSpinBox, QScrollArea,
     )
     from PySide6.QtCore import Qt, Signal  # type: ignore
     from PySide6.QtGui import QFont, QIcon, QPixmap  # type: ignore
@@ -369,10 +369,22 @@ class _ApiKeysPage(QWidget):
 
         body.addStretch()
 
-        # Embed page into self
+        # Embed page into a scroll area so all service sections are reachable
+        scroll = QScrollArea()
+        scroll.setWidget(page)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet(
+            f"QScrollArea {{ background: {BG}; border: none; }}"
+            f"QScrollBar:vertical {{ background: {SURFACE}; width: 8px; border-radius: 4px; }}"
+            f"QScrollBar::handle:vertical {{ background: {BORDER}; border-radius: 4px; min-height: 20px; }}"
+            f"QScrollBar::handle:vertical:hover {{ background: {ACCENT}; }}"
+            f"QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0px; }}"
+        )
+
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(page)
+        outer.addWidget(scroll)
 
         self._load()
 
@@ -415,7 +427,7 @@ class _PathsPage(QWidget):
         self._config = config
         page, body = _page_wrapper(
             "📁  Paths",
-            "Vault and backup locations  ·  changes apply immediately"
+            "Vault folder location  ·  changes apply immediately"
         )
 
         form = QFormLayout()
@@ -624,7 +636,16 @@ class _SoundboardPage(QWidget):
 class _GeneralPage(QWidget):
     """AI model, voice commands, and session scheduling preferences."""
 
-    _MODELS = ["gpt-4o", "gpt-4-turbo", "gpt-4", "gpt-3.5-turbo"]
+    _MODELS = [
+        "gpt-4o",
+        "gpt-4o-mini",
+        "gpt-4-turbo",
+        "gpt-4",
+        "gpt-3.5-turbo",
+        "o1",
+        "o1-mini",
+        "o3-mini",
+    ]
 
     def __init__(self, config, parent=None) -> None:
         super().__init__(parent)
@@ -643,6 +664,7 @@ class _GeneralPage(QWidget):
         body.addWidget(_section_label("AI Model"))
         self._model_combo = QComboBox()
         self._model_combo.addItems(self._MODELS)
+        self._model_combo.setEditable(True)   # allow typing a custom model name
         self._model_combo.setStyleSheet(
             f"QComboBox {{ background: {SURFACE}; color: {TEXT}; font-size: 11px;"
             f"  border: 1px solid {BORDER}; border-radius: 4px; padding: 5px 10px; }}"
@@ -655,7 +677,8 @@ class _GeneralPage(QWidget):
         body.addLayout(form)
         body.addWidget(_hint(
             "The model used by the Chat agent and other OpenAI-powered features.  "
-            "gpt-4o is recommended for best quality at reasonable cost."
+            "gpt-4o is recommended for best quality at reasonable cost.  "
+            "You can also type a custom model name directly."
         ))
 
         # Voice commands
@@ -705,7 +728,11 @@ class _GeneralPage(QWidget):
     def _load(self) -> None:
         model = getattr(self._config, "default_model", "gpt-4o")
         idx = self._model_combo.findText(model)
-        self._model_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        if idx >= 0:
+            self._model_combo.setCurrentIndex(idx)
+        else:
+            # Custom model name not in the preset list — set it directly
+            self._model_combo.setCurrentText(model)
 
         self._voice_enabled.setChecked(
             getattr(self._config, "voice_commands_enabled", False)
@@ -719,6 +746,146 @@ class _GeneralPage(QWidget):
         self._config.voice_commands_enabled = self._voice_enabled.isChecked()
         self._config.session_reminder_hours_before = self._reminder_hours.value()
         self._config.save_settings()
+
+
+class _TemplatesPage(QWidget):
+    """Templates: remote URL and local path for template sync."""
+
+    def __init__(self, config, parent=None) -> None:
+        super().__init__(parent)
+        self._config = config
+        page, body = _page_wrapper(
+            "📝  Templates",
+            "Remote URL or local folder for template sync  ·  changes apply on next sync"
+        )
+
+        form = QFormLayout()
+        form.setSpacing(8)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+
+        body.addWidget(_section_label("Template source"))
+        body.addWidget(_hint(
+            "Templates can be synced from a remote URL (raw .md or .zip) "
+            "or loaded from a local folder.  Leave both blank to manage "
+            "templates manually."
+        ))
+
+        self._remote_url = QLineEdit()
+        self._remote_url.setPlaceholderText("https://example.com/templates.zip  (optional)")
+        self._remote_url.setStyleSheet(_FIELD_STYLE)
+
+        local_w, self._local_path = _path_widget("Local folder containing .md template files  (optional)")
+
+        form.addRow("Remote URL",   self._remote_url)
+        form.addRow("Local folder", local_w)
+        body.addLayout(form)
+
+        body.addStretch()
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(page)
+
+        self._load()
+
+    def _load(self) -> None:
+        self._remote_url.setText(getattr(self._config, "templates_remote_url", "") or "")
+        lp = getattr(self._config, "templates_local_path", None)
+        self._local_path.setText(str(lp) if lp else "")
+
+    def save(self) -> None:
+        url = self._remote_url.text().strip()
+        self._config.templates_remote_url = url or None
+        lp  = self._local_path.text().strip()
+        from pathlib import Path as _Path
+        self._config.templates_local_path = _Path(lp) if lp else None
+        self._config.save_settings()
+
+
+class _PlexJellyfinPage(QWidget):
+    """Plex / Jellyfin: server type, URL (settings.json), token (variables.env)."""
+
+    def __init__(self, config, env_path: str, parent=None) -> None:
+        super().__init__(parent)
+        self._config   = config
+        self._env_path = env_path
+        page, body = _page_wrapper(
+            "🏠  Plex / Jellyfin",
+            "Self-hosted media server connection  ·  URL saved in settings.json  ·  token saved in variables.env"
+        )
+
+        form = QFormLayout()
+        form.setSpacing(8)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+
+        body.addWidget(_section_label("Server"))
+        body.addWidget(_hint(
+            "Plex: use X-Plex-Token (find via your Plex account XML feed).  "
+            "Jellyfin: create an API key in the Jellyfin web UI under Admin → API Keys."
+        ))
+
+        self._type_combo = QComboBox()
+        self._type_combo.addItems(["Plex", "Jellyfin"])
+        self._type_combo.setStyleSheet(
+            f"QComboBox {{ background: {SURFACE}; color: {TEXT}; font-size: 11px;"
+            f"  border: 1px solid {BORDER}; border-radius: 4px; padding: 5px 10px; }}"
+            f"QComboBox:hover {{ border-color: {ACCENT}; }}"
+            f"QComboBox QAbstractItemView {{ background: {PANEL}; color: {TEXT};"
+            f"  border: 1px solid {ACCENT}; selection-background-color: {ACCENT}; }}"
+        )
+        self._type_combo.currentTextChanged.connect(self._on_type_changed)
+
+        self._url_field = QLineEdit()
+        self._url_field.setPlaceholderText("http://localhost:8096")
+        self._url_field.setStyleSheet(_FIELD_STYLE)
+
+        token_w, self._token_field = _password_widget("API token / X-Plex-Token")
+
+        form.addRow("Server type", self._type_combo)
+        form.addRow("Server URL",  self._url_field)
+        form.addRow("Token",       token_w)
+        body.addLayout(form)
+
+        body.addStretch()
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(page)
+
+        self._load()
+
+    def _on_type_changed(self, stype: str) -> None:
+        self._url_field.setPlaceholderText(
+            "http://localhost:32400" if stype == "Plex" else "http://localhost:8096"
+        )
+
+    def _load(self) -> None:
+        stype = getattr(self._config, "plex_jellyfin_server_type", "Jellyfin")
+        idx   = self._type_combo.findText(stype)
+        self._type_combo.setCurrentIndex(idx if idx >= 0 else 1)
+        self._url_field.setText(getattr(self._config, "plex_jellyfin_url", "") or "")
+        # Token from env
+        token = os.environ.get("PLEX_JELLYFIN_TOKEN", "")
+        if not token:
+            token = _read_env(self._env_path).get("PLEX_JELLYFIN_TOKEN", "")
+        self._token_field.setText(token)
+
+    def save(self) -> None:
+        stype = self._type_combo.currentText()
+        url   = self._url_field.text().strip()
+        token = self._token_field.text().strip()
+
+        self._config.plex_jellyfin_server_type = stype
+        self._config.plex_jellyfin_url         = url
+        self._config.save_settings()
+
+        _write_env(self._env_path, {"PLEX_JELLYFIN_TOKEN": token})
+        if token:
+            os.environ["PLEX_JELLYFIN_TOKEN"] = token
+        elif "PLEX_JELLYFIN_TOKEN" in os.environ:
+            del os.environ["PLEX_JELLYFIN_TOKEN"]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -743,11 +910,13 @@ class PreferencesDialog(QDialog):
 
     _SECTIONS = [
         ("🔑  API Keys",        "API keys for OpenAI, Spotify, Discord, YouTube, Syrinscape", ""),
-        ("📁  Paths",            "Vault folder and backup locations",                          ""),
+        ("📁  Paths",            "Vault folder location",                                      ""),
         ("🖥  Interface",        "Console visibility and startup behaviour",                   ""),
         ("⚙  General",          "AI model, voice commands, session scheduling",               ""),
         ("Fantasy Grounds",     "Campaigns folder and FGU data root",             "fantasygrounds.png"),
         ("🔊  Soundboard",       "Sound effect folders",                                      ""),
+        ("📝  Templates",        "Remote URL or local folder for template sync",              ""),
+        ("🏠  Plex / Jellyfin",  "Self-hosted media server connection",                       ""),
     ]
 
     def __init__(self, config, env_path: str = "variables.env", parent=None) -> None:
@@ -837,9 +1006,12 @@ class PreferencesDialog(QDialog):
         self._gen_page  = _GeneralPage(self._config)
         self._fgu_page  = _FguPage(self._config)
         self._sfx_page  = _SoundboardPage(self._config)
+        self._tpl_page  = _TemplatesPage(self._config)
+        self._pj_page   = _PlexJellyfinPage(self._config, self._env_path)
 
         for page in (self._api_page, self._path_page, self._ui_page,
-                     self._gen_page, self._fgu_page, self._sfx_page):
+                     self._gen_page, self._fgu_page, self._sfx_page,
+                     self._tpl_page, self._pj_page):
             self._stack.addWidget(page)
 
         rlay.addWidget(self._stack, 1)
@@ -898,6 +1070,8 @@ class PreferencesDialog(QDialog):
             self._gen_page.save()
             self._fgu_page.save()
             self._sfx_page.save()
+            self._tpl_page.save()
+            self._pj_page.save()
 
             self._status_lbl.setText("✓  Saved")
             self._status_lbl.setStyleSheet(

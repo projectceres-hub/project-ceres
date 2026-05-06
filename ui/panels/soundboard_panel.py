@@ -563,6 +563,69 @@ class SoundboardPanel(QDockWidget):
             except Exception:
                 pass
 
+    def set_eq_bands(self, enabled: bool, bands: list) -> None:
+        """
+        Apply EQ to all currently-loaded scene `Sound` objects.
+
+        Uses pygame.sndarray to read PCM data as a numpy array,
+        applies the 10-band EQ via equalizer_panel.apply_eq, and
+        writes the filtered data back. When disabled, reloads from file paths.
+
+        Args:
+            enabled: If False, reload sounds from their original paths to restore flat audio.
+            bands:   List of 10 dB gain floats matching BAND_FREQS in equalizer_panel.
+        """
+        if not _PYGAME_OK:
+            return
+        try:
+            import numpy as np
+            import pygame.sndarray as sndarray
+        except ImportError:
+            self.status_message.emit("EQ: numpy/pygame.sndarray not available")
+            return
+
+        try:
+            from ui.panels.equalizer_panel import apply_eq
+        except ImportError:
+            return
+
+        freq = 44100
+        try:
+            if pygame.mixer.get_init():
+                freq = pygame.mixer.get_init()[0]
+        except Exception:
+            pass
+
+        for slot_idx, sound in list(getattr(self, "_active_sounds", {}).items()):
+            try:
+                scene = (
+                    self._scenes[self._current_scene_idx]
+                    if 0 <= self._current_scene_idx < len(self._scenes)
+                    else None
+                )
+                path: Optional[Path] = None
+                if scene is not None and 0 <= slot_idx < len(scene.slots):
+                    path = Path(scene.slots[slot_idx].path)
+
+                if not enabled:
+                    if path and path.exists():
+                        new_sound = pygame.mixer.Sound(str(path))
+                        self._active_sounds[slot_idx] = new_sound
+                    continue
+
+                arr = sndarray.array(sound)
+                arr_f = arr.astype(np.float32) / 32768.0
+                arr_f = apply_eq(arr_f, freq, bands)
+                arr_out = np.clip(arr_f * 32767.0, -32768, 32767).astype(np.int16)
+                new_sound = sndarray.make_sound(arr_out)
+                self._active_sounds[slot_idx] = new_sound
+            except Exception as exc:
+                self.status_message.emit(f"EQ: soundboard error — {exc}")
+                break
+        self.status_message.emit(
+            "EQ applied to Soundboard" if enabled else "EQ removed from Soundboard"
+        )
+
     # ══════════════════════════════════════════════════════════════════════════
     # Scenes tab — UI refresh
     # ══════════════════════════════════════════════════════════════════════════
@@ -913,6 +976,23 @@ class SoundboardPanel(QDockWidget):
         self._active_channels.clear()
         self._active_sounds.clear()
 
+    def handle_command(self, action: str, query: str = "") -> None:
+        """Route Discord / master-scene commands to named Soundboard scenes."""
+        action = action.lower().strip()
+        if action == "play_scene" and query.strip():
+            q = query.strip().lower()
+            for i, sc in enumerate(self._scenes):
+                if sc.name.strip().lower() == q:
+                    self._current_scene_idx = i
+                    if self._scene_list_widget is not None:
+                        self._scene_list_widget.setCurrentRow(i)
+                    self._refresh_slot_list()
+                    self._play_scene()
+                    return
+            self.status_message.emit(f"Soundboard: no scene named {query!r}")
+        elif action == "stop":
+            self._stop_scene()
+
     # ══════════════════════════════════════════════════════════════════════════
     # Scenes tab — persistence
     # ══════════════════════════════════════════════════════════════════════════
@@ -960,44 +1040,7 @@ class SoundboardPanel(QDockWidget):
     def _style_small_btn(self, btn: QPushButton) -> None:
         btn.setStyleSheet(
             f"QPushButton {{ background: {SURFACE}; color: {MUTED}; font-size: 9px;"
-            f"  border: 1px solid {BORDER}; border-radius: 3px; padding: 1px; }}"
+            f"  border: 1px solid {BORDER}; border-radius: 3px; padding: 2px 6px; }}"
             f"QPushButton:hover {{ border-color: {ACCENT}; color: {ACCENT}; }}"
             f"QPushButton:pressed {{ background: {PANEL}; }}"
         )
-
-    def _style_loop_btn(self, btn: QPushButton, active: bool) -> None:
-        if active:
-            btn.setStyleSheet(
-                f"QPushButton {{ background: {SURFACE}; color: {ACCENT}; font-size: 10px;"
-                f"  border: 1px solid {ACCENT}; border-radius: 4px; padding: 2px 6px; }}"
-                f"QPushButton:hover {{ background: {PANEL}; }}"
-                f"QPushButton:pressed {{ background: {BG}; }}"
-            )
-        else:
-            btn.setStyleSheet(
-                f"QPushButton {{ background: {SURFACE}; color: {MUTED}; font-size: 10px;"
-                f"  border: 1px solid {BORDER}; border-radius: 4px; padding: 2px 6px; }}"
-                f"QPushButton:hover {{ border-color: {ACCENT}; color: {ACCENT}; }}"
-                f"QPushButton:pressed {{ background: {PANEL}; }}"
-            )
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # Lifecycle
-    # ══════════════════════════════════════════════════════════════════════════
-
-    def closeEvent(self, event) -> None:  # type: ignore[override]
-        """Stop all scene audio cleanly when the panel is closed."""
-        self._stop_all_scene_channels()
-        super().closeEvent(event)
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # Helpers
-    # ══════════════════════════════════════════════════════════════════════════
-
-    @staticmethod
-    def _clear_layout(layout) -> None:
-        """Remove all widgets from a layout."""
-        while layout.count():
-            item = layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()

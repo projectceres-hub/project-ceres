@@ -1156,6 +1156,26 @@ class SpotifyPanel(QDockWidget):
         # Push directly to Spotify device — bypass the debounce for responsiveness.
         self._sig_set_vol.emit(value)
 
+    def get_np_state(self) -> dict:
+        """Return current playback state for the Now Playing panel."""
+        title = self._track_label.text() if hasattr(self, "_track_label") else ""
+        subtitle = self._artist_label.text() if hasattr(self, "_artist_label") else ""
+        playing = bool(getattr(self, "_is_playing", False))
+        dur = getattr(self, "_duration_ms", 0)
+        prog = getattr(self, "_progress_ms", 0)
+        pct = int(prog * 100 / dur) if dur > 0 else -1
+        return {
+            "playing": playing,
+            "paused": not playing and bool(title and title not in ("", "— not playing —")),
+            "title": title if title not in ("", "— not playing —") else "",
+            "subtitle": subtitle,
+            "progress_pct": pct,
+            "can_pause": True,
+            "can_next": True,
+            "can_prev": True,
+            "can_stop": True,
+        }
+
     # ── Scene interaction ─────────────────────────────────────────────────────
 
     def _on_scene_clicked(self, tag: str) -> None:
@@ -1283,8 +1303,10 @@ class SpotifyPanel(QDockWidget):
         -----------------
         play   — resume if no query, else search + auto-play first result
         pause  — pause playback
+        previous — previous track
         skip   — skip to next track
         search — run search and show results (no auto-play)
+        play_playlist — play a playlist URI, open.spotify URL, or raw playlist id
         """
         action = action.lower().strip()
         self.status_message.emit(
@@ -1293,6 +1315,9 @@ class SpotifyPanel(QDockWidget):
 
         if action == "pause":
             self._sig_pause.emit()
+
+        elif action == "previous":
+            self._sig_previous.emit()
 
         elif action == "play":
             if query.strip():
@@ -1310,6 +1335,16 @@ class SpotifyPanel(QDockWidget):
                 self._search_input.setText(query.strip())
                 self._sig_search.emit(query.strip())
                 self._tabs.setCurrentIndex(1)   # switch to Search tab
+
+        elif action == "play_playlist":
+            if not query.strip():
+                return
+            raw = query.strip()
+            uri = _normalize_spotify_uri(raw)
+            if not uri and len(raw) == 22 and raw.isalnum():
+                uri = f"spotify:playlist:{raw}"
+            if uri:
+                self._sig_play_ctx.emit(uri)
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 

@@ -10,6 +10,7 @@ Main entry point for Project Ceres.
 from dotenv import load_dotenv
 import os
 import json
+import time
 from pathlib import Path
 from core.config import Config
 from core.errors import install_error_handler, guarded_main
@@ -37,13 +38,13 @@ from prompt_toolkit.completion import NestedCompleter, Completer, Completion
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 try:
     from prompt_toolkit.completion import CompleteStyle
-except Exception:
+except ImportError:
     try:
         from prompt_toolkit.shortcuts.prompt import CompleteStyle
-    except Exception:
+    except ImportError:
         try:
             from prompt_toolkit.enums import CompleteStyle
-        except Exception:
+        except ImportError:
             CompleteStyle = None  # Fallback if not found
 from pantheon.occator import cmd_search, build_search_index, cmd_srd_index, cmd_search_srd
 from pantheon.imporcitor import convert_pdf_to_md
@@ -58,12 +59,29 @@ from core.scheduler import Scheduler, register_default_jobs
 from pantheon.conditor import HistoryManager
 from pantheon.obarator import get_tags_for_note, add_tag, remove_tag, list_all_tags, get_all_tags
 from typing import Callable, Dict, List, Optional, Any, Tuple
+from functools import partial
 import yaml
 import shlex
 
 
+def _assert_within(base: Path, target: Path, label: str = "path") -> Path:
+    """Resolve target and assert it is inside base. Raises ValueError if not."""
+    resolved = target.resolve()
+    base_resolved = base.resolve()
+    try:
+        resolved.relative_to(base_resolved)
+    except ValueError:
+        raise ValueError(f"Refusing to access {label} outside allowed directory: {resolved}")
+    return resolved
+
+
 # Constants
 VERSION: str = "0.1"
+
+DEFAULT_PDF_MAP_PATH: str = "maps/" "dnd5e.yaml"
+DEFAULT_IMPORT_SUBFOLDER: str = "Converted"
+ERROR_NO_VAULT: str = "No vault is currently set. Use 'switch' or 'addvault' to set one."
+ERROR_VAULT_NOT_FOUND: str = "Vault '{name}' not found. Use 'vaults' to see available vaults."
 
 # Error messages dictionary
 ERRORS: Dict[str, str] = {
@@ -111,18 +129,27 @@ class SchedulerContext:
 
     @property
     def vaults(self) -> Dict[str, str]:
-        """Live vault map from config."""
-        return self.config.vaults if self.config is not None else {}
+        """Snapshot of the vault map, taken under the config lock."""
+        if self.config is None:
+            return {}
+        with self.config._lock:
+            return dict(self.config.vaults)
 
     @property
     def ignored_vaults(self) -> List[str]:
-        """Live ignored-vaults list from config."""
-        return self.config.ignored_vaults if self.config is not None else []
+        """Snapshot of the ignored-vaults list, taken under the config lock."""
+        if self.config is None:
+            return []
+        with self.config._lock:
+            return list(self.config.ignored_vaults)
 
     @property
     def current_vault(self) -> Optional[str]:
-        """Live current vault from config."""
-        return self.config.current_vault if self.config is not None else None
+        """Current vault name, read under the config lock."""
+        if self.config is None:
+            return None
+        with self.config._lock:
+            return self.config.current_vault
 
 
 def create_save_vaults_wrapper(config: Config) -> Callable[[Dict[str, str]], None]:
@@ -365,11 +392,22 @@ class ContextAwareCompleter(Completer):
         self.base_completer = base_completer
         self._note_cache: Optional[List[str]] = None
         self._tag_cache: Optional[List[str]] = None
+        self._cache_ttl: float = 10.0
+        self._last_cache_refresh: float = 0.0
     
+    def _cache_is_stale(self) -> bool:
+        """Return True if the cache TTL has expired and a refresh is needed."""
+        return (time.monotonic() - self._last_cache_refresh) > self._cache_ttl
+
     def _refresh_caches(self) -> None:
         """Refresh cached note and tag lists."""
         self._note_cache = get_note_name_list(self.config, self.error_func)
         self._tag_cache = get_tag_completions(self.config)
+        self._last_cache_refresh = time.monotonic()
+
+    def invalidate_cache(self) -> None:
+        """Force the next completion event to rebuild the cache immediately."""
+        self._last_cache_refresh = 0.0
     
     def get_completions(self, document, complete_event):
         """
@@ -431,7 +469,7 @@ class ContextAwareCompleter(Completer):
         if cmd_name in ("tag-add", "tag-remove"):
             if arg_count == 1:
                 # First argument (note): suggest note names
-                if self._note_cache is None:
+                if self._cache_is_stale():
                     self._refresh_caches()
                 # Current word is the note name being typed
                 search_word = current_word if len(parts) > 1 else ""
@@ -440,7 +478,7 @@ class ContextAwareCompleter(Completer):
                         yield Completion(note, start_position=-len(search_word))
             elif arg_count == 2:
                 # Second argument (tag): suggest tags
-                if self._tag_cache is None:
+                if self._cache_is_stale():
                     self._refresh_caches()
                 # Current word is the tag being typed
                 search_word = current_word.lstrip("#")
@@ -465,7 +503,7 @@ class ContextAwareCompleter(Completer):
         elif cmd_name == "tag-notes":
             if arg_count == 1:
                 # First argument (tag): suggest tags
-                if self._tag_cache is None:
+                if self._cache_is_stale():
                     self._refresh_caches()
                 # Current word is the tag being typed
                 search_word = current_word.lstrip("#")
@@ -703,11 +741,21 @@ def _resolve_note_path(
     if not current_vault or current_vault not in vaults:
         print("Error: No current vault selected.")
         return None
-    
+
+    vault_path = Path(vaults[current_vault])
+    if not vault_path.exists():
+        print(f"Error: Vault path '{vault_path}' does not exist on disk. "
+              f"Use 'addvault' to re-register it or check that the directory is accessible.")
+        return None
+
     # Resolve note path
     if not note_name.endswith(".md"):
         note_name += ".md"
-    note_path = Path(vaults[current_vault]) / note_name
+    try:
+        note_path = _assert_within(vault_path, vault_path / note_name, "note path")
+    except ValueError as e:
+        print(f"Error: {e}")
+        return None
     
     if not note_path.exists():
         print(f"Error: Note '{note_name}' not found in current vault.")
@@ -751,7 +799,7 @@ def cmd_undo(
         if note_path is None:
             print("No operations to undo.")
         else:
-            print(f"No history found for note: {note_path}")
+            print(f"Error: No history found for note: {note_path}.")
 
 
 def cmd_history_list(
@@ -798,16 +846,13 @@ def cmd_history_list(
     if note_path is None:
         return
     
-    # Fetch all entries to get the true total, then slice to the requested limit.
-    all_entries = history_manager.list_history(note_path, limit=9999)
-    total = len(all_entries)
-    entries = all_entries[:limit]
+    entries = history_manager.list_history(note_path, limit=limit)
 
     if not entries:
-        print(f"No history found for note: {note_name}")
+        print(f"Error: No history found for note: {note_name}.")
         return
 
-    print(f"\nHistory for '{note_name}' (showing {len(entries)} of {total} entries):\n")
+    print(f"\nHistory for '{note_name}' (showing {len(entries)} entries):\n")
     print("=" * 80)
     
     for i, entry in enumerate(entries, 1):
@@ -872,7 +917,7 @@ def cmd_history_restore(
     entries = history_manager.list_history(note_path, limit=index)
     
     if not entries:
-        print(f"No history found for note: {note_name}")
+        print(f"Error: No history found for note: {note_name}.")
         return
     
     if index > len(entries):
@@ -895,7 +940,7 @@ def cmd_history_restore(
             print(f"Note '{note_name}' has been restored to this version.")
             print(f"A backup of the previous version was created before restore.")
         else:
-            print("Failed to restore version.")
+            print("Error: Failed to restore version.")
     except FileNotFoundError as e:
         print(f"Error: {e}")
         print("Hint: The backup file may have been deleted manually.")
@@ -913,7 +958,7 @@ def cmd_tag_add(
 ) -> None:
     """
     Add a tag to a note.
-    
+
     Args:
         args: Command arguments in format "<note> <tag>"
         vaults: Dictionary mapping vault names to paths
@@ -923,7 +968,13 @@ def cmd_tag_add(
     if not current_vault or current_vault not in vaults:
         error_func("no_vault")
         return
-    
+
+    vault_path = Path(vaults[current_vault])
+    if not vault_path.exists():
+        print(f"Error: Vault path '{vault_path}' does not exist on disk. "
+              f"Use 'addvault' to re-register it or check that the directory is accessible.")
+        return
+
     parts = args.strip().split(None, 1)
     if len(parts) < 2:
         print("Usage: tag-add <note> <tag>")
@@ -972,7 +1023,7 @@ def cmd_tag_remove(
 ) -> None:
     """
     Remove a tag from a note.
-    
+
     Args:
         args: Command arguments in format "<note> <tag>"
         vaults: Dictionary mapping vault names to paths
@@ -982,7 +1033,13 @@ def cmd_tag_remove(
     if not current_vault or current_vault not in vaults:
         error_func("no_vault")
         return
-    
+
+    vault_path = Path(vaults[current_vault])
+    if not vault_path.exists():
+        print(f"Error: Vault path '{vault_path}' does not exist on disk. "
+              f"Use 'addvault' to re-register it or check that the directory is accessible.")
+        return
+
     parts = args.strip().split(None, 1)
     if len(parts) < 2:
         print("Usage: tag-remove <note> <tag>")
@@ -1041,9 +1098,13 @@ def cmd_tag_list(
     if not current_vault or current_vault not in vaults:
         error_func("no_vault")
         return
-    
+
     vault_path = Path(vaults[current_vault])
-    
+    if not vault_path.exists():
+        print(f"Error: Vault path '{vault_path}' does not exist on disk. "
+              f"Use 'addvault' to re-register it or check that the directory is accessible.")
+        return
+
     try:
         tag_map = list_all_tags(vault_path)
         
@@ -1079,19 +1140,23 @@ def cmd_tag_notes(
     if not current_vault or current_vault not in vaults:
         error_func("no_vault")
         return
-    
+
     tag = args.strip()
     if not tag:
         print("Usage: tag-notes <tag>")
         print("Example: tag-notes spell")
         return
-    
+
     # Remove # prefix if present
     if tag.startswith("#"):
         tag = tag[1:]
-    
+
     vault_path = Path(vaults[current_vault])
-    
+    if not vault_path.exists():
+        print(f"Error: Vault path '{vault_path}' does not exist on disk. "
+              f"Use 'addvault' to re-register it or check that the directory is accessible.")
+        return
+
     try:
         tag_map = list_all_tags(vault_path)
         
@@ -1181,7 +1246,7 @@ def _resolve_target_vault(config: Config, parts: List[str]) -> Optional[str]:
             target_vault = p.split("=", 1)[1]
             break
     if target_vault not in config.vaults:
-        print(f"Vault '{target_vault}' not found. Available: {', '.join(config.vaults.keys())}")
+        print(ERROR_VAULT_NOT_FOUND.format(name=target_vault) + f" Available: {', '.join(config.vaults.keys())}")
         return None
     return target_vault
 
@@ -1196,27 +1261,88 @@ def _fixed_out_dir(config: Config) -> Tuple[Optional[str], Optional[str]]:
         Tuple of (vault_path, out_dir) or (None, None) if vault not found
     """
     if config.default_vault_name not in config.vaults:
-        print(f"Vault '{config.default_vault_name}' not found. Available: {', '.join(config.vaults.keys())}")
+        print(ERROR_VAULT_NOT_FOUND.format(name=config.default_vault_name) + f" Available: {', '.join(config.vaults.keys())}")
         return None, None
     vault_path = config.vaults[config.default_vault_name]
-    out_dir = os.path.join(vault_path, config.default_import_subfolder)
+    try:
+        out_dir_path = _assert_within(
+            Path(vault_path),
+            Path(vault_path) / config.default_import_subfolder,
+            "output directory",
+        )
+    except ValueError as e:
+        print(f"Error: {e}")
+        return None, None
+    out_dir = str(out_dir_path)
     os.makedirs(out_dir, exist_ok=True)
     return vault_path, out_dir
 
-def _next_copy_name(out_dir: str, base: str) -> str:
+def _next_copy_name(out_dir: str, base: str, existing: set = None) -> str:
+    """Return the next available numbered copy name (e.g. base1.md, base2.md).
+
+    When `existing` is provided, membership is checked against the set instead
+    of hitting the filesystem, allowing the batch loop to make a single
+    os.listdir() call rather than one os.path.exists() per file.
+    """
     i = 1
     while True:
         cand = f"{base}{i}.md"
-        if not os.path.exists(os.path.join(out_dir, cand)):
-            return cand
+        if existing is not None:
+            if cand not in existing:
+                return cand
+        else:
+            if not os.path.exists(os.path.join(out_dir, cand)):
+                return cand
         i += 1
+
+
+def _load_pdf_map(map_path: str) -> dict:
+    """Load and validate a YAML mapping file.  Returns {} on any error."""
+    try:
+        with open(map_path, "r", encoding="utf-8") as f:
+            result = yaml.safe_load(f) or {}
+        if not isinstance(result, dict):
+            print(f"Warning: Map file '{map_path}' did not contain a mapping. Using defaults.")
+            return {}
+        return result
+    except FileNotFoundError:
+        print(f"Warning: Map file '{map_path}' not found. Using default rules.")
+        return {}
+    except yaml.YAMLError as e:
+        print(f"Error: Failed to parse map file '{map_path}': {e}")
+        return {}
+    except OSError as e:
+        print(f"Error: Could not read map file '{map_path}': {e}")
+        return {}
+
+
+def _resolve_pdf_output(
+    out_dir: str, base_name: str, prompt_input: Callable[[str], str]
+) -> Optional[str]:
+    """Check whether the output file already exists and ask the user what to do.
+
+    Returns the filename stem to write (no extension), or None if the user
+    chose to skip.
+    """
+    target = os.path.join(out_dir, base_name + ".md")
+    if not os.path.exists(target):
+        return base_name
+    print(f"Output file '{base_name}.md' already exists.")
+    choice = prompt_input("(R)eplace, (C)opy as new file, or (S)kip? ").strip().lower()
+    if choice == "r":
+        return base_name
+    elif choice == "c":
+        return os.path.splitext(_next_copy_name(out_dir, base_name))[0]
+    else:
+        print("Skipped.")
+        return None
 
 
 def cmd_pdf2md(args: str, config: Config, prompt_input_func: Callable[[str], str]) -> None:
     """
     Convert a PDF file to Markdown.
     
-    Usage: pdf2md <PDF_PATH> [--map maps/dnd5e.yaml]
+    Usage: pdf2md <PDF_PATH> [--map <map_file>]
     Output is always: {default_vault_name}/Converted/<original-filename>.md
     If exists: prompt to Replace or make numbered Copy.
     
@@ -1227,64 +1353,38 @@ def cmd_pdf2md(args: str, config: Config, prompt_input_func: Callable[[str], str
     """
     parts = shlex.split(args)
     if len(parts) < 1:
-        print("Usage: pdf2md <PDF_PATH> [--map maps/dnd5e.yaml]")
+        print(f"Usage: pdf2md <PDF_PATH> [--map {DEFAULT_PDF_MAP_PATH}]")
         return
 
     pdf_path = parts[0]
-    map_path = "maps/dnd5e.yaml"
+    map_path = DEFAULT_PDF_MAP_PATH
     for i, p in enumerate(parts[1:], start=1):
         if p == "--map" and i + 1 < len(parts):
             map_path = parts[i+1]
         elif p.startswith("--map="):
             map_path = p.split("=", 1)[1]
 
-    if not os.path.isfile(pdf_path):
-        print(f"File not found: {pdf_path}")
-        return
-
     vault_path, out_dir = _fixed_out_dir(config)
     if not out_dir:
+        return
+    try:
+        pdf_path = str(_assert_within(Path(vault_path), Path(pdf_path), "PDF path"))
+    except ValueError as e:
+        print(f"Error: {e}")
+        return
+
+    if not os.path.isfile(pdf_path):
+        print(f"Error: File not found: {pdf_path}.")
         return
 
     from pantheon.imporcitor import convert_pdf_to_md
 
-    rules = {}
-    if os.path.isfile(map_path):
-        try:
-            with open(map_path, "r", encoding="utf-8") as f:
-                rules = yaml.safe_load(f) or {}
-        except FileNotFoundError:
-            print(f"Warning: Map file '{map_path}' not found. Using default rules.")
-        except PermissionError as e:
-            print(f"Warning: Permission denied reading map file '{map_path}': {e}")
-            print("Hint: Check file permissions. Using default rules.")
-        except yaml.YAMLError as e:
-            print(f"Error: Failed to parse map file '{map_path}': {e}")
-            print("Hint: Check that the YAML file is properly formatted. Using default rules.")
-        except OSError as e:
-            print(f"Warning: Failed to read map file '{map_path}': {e}")
-            print("Hint: Check that the file is accessible. Using default rules.")
-        except Exception as e:
-            print(f"Warning: Unexpected error reading map file: {e}")
-            print("Using default rules.")
+    rules = _load_pdf_map(map_path)
 
-    # Desired base name from the PDF
     base = os.path.splitext(os.path.basename(pdf_path))[0]
-    target = os.path.join(out_dir, base + ".md")
-
-    override_filename = base  # default: use base name
-
-    if os.path.exists(target):
-        # Ask user: Replace or Copy
-        print(f"'{base}.md' already exists in {config.default_vault_name}/{config.default_import_subfolder}.")
-        choice = prompt_input_func("Replace (R) or make numbered Copy (C)? ").strip().lower()
-        if choice.startswith('r'):
-            # keep override_filename = base (will overwrite)
-            pass
-        else:
-            # choose next available numbered name like base1.md, base2.md...
-            numbered = _next_copy_name(out_dir, base)  # returns 'base1.md'
-            override_filename = os.path.splitext(numbered)[0]  # strip '.md' for convert()
+    override_filename = _resolve_pdf_output(out_dir, base, prompt_input_func)
+    if override_filename is None:
+        return
 
     try:
         written = convert_pdf_to_md(pdf_path, out_dir, rules, override_filename=override_filename)
@@ -1300,7 +1400,7 @@ def cmd_pdfbatch(args: str, config: Config) -> None:
     """
     Convert all PDFs in a folder to Markdown.
     
-    Usage: pdfbatch <PDF_FOLDER> [--map maps/dnd5e.yaml]
+    Usage: pdfbatch <PDF_FOLDER> [--map <map_file>]
     Output is always: {default_vault_name}/Converted/<original-filename>.md
     If exists: auto-number (base1.md, base2.md, ...)
     
@@ -1310,11 +1410,11 @@ def cmd_pdfbatch(args: str, config: Config) -> None:
     """
     parts = shlex.split(args)
     if len(parts) < 1:
-        print("Usage: pdfbatch <PDF_FOLDER> [--map maps/dnd5e.yaml]")
+        print(f"Usage: pdfbatch <PDF_FOLDER> [--map {DEFAULT_PDF_MAP_PATH}]")
         return
 
     folder = parts[0]
-    map_path = "maps/dnd5e.yaml"
+    map_path = DEFAULT_PDF_MAP_PATH
     for i, p in enumerate(parts[1:], start=1):
         if p == "--map" and i + 1 < len(parts):
             map_path = parts[i+1]
@@ -1322,7 +1422,7 @@ def cmd_pdfbatch(args: str, config: Config) -> None:
             map_path = p.split("=", 1)[1]
 
     if not os.path.isdir(folder):
-        print(f"Folder not found: {folder}")
+        print(f"Error: Folder not found: {folder}.")
         return
 
     vault_path, out_dir = _fixed_out_dir(config)
@@ -1331,14 +1431,7 @@ def cmd_pdfbatch(args: str, config: Config) -> None:
 
     from pantheon.imporcitor import convert_pdf_to_md
 
-    rules = {}
-    if os.path.isfile(map_path):
-        try:
-            with open(map_path, "r", encoding="utf-8") as f:
-                rules = yaml.safe_load(f) or {}
-        except (FileNotFoundError, PermissionError, yaml.YAMLError, OSError) as e:
-            print(f"Warning: Failed to load map file '{map_path}': {e}")
-            print("Using default rules.")
+    rules = _load_pdf_map(map_path)
 
     try:
         pdf_files = [f for f in os.listdir(folder) if f.lower().endswith(".pdf")]
@@ -1354,18 +1447,22 @@ def cmd_pdfbatch(args: str, config: Config) -> None:
         print(f"Error: Unexpected error reading folder: {e}")
         return
 
+    # Build the set of existing output filenames once — avoids one os.path.exists()
+    # call per file in the batch loop.
+    existing_outputs = set(os.listdir(out_dir)) if os.path.isdir(out_dir) else set()
+
     for fname in pdf_files:
         pdf_path = os.path.join(folder, fname)
         try:
             base = os.path.splitext(os.path.basename(pdf_path))[0]
-            target = os.path.join(out_dir, base + ".md")
 
             override_filename = base
-            if os.path.exists(target):
-                numbered = _next_copy_name(out_dir, base)
+            if (base + ".md") in existing_outputs:
+                numbered = _next_copy_name(out_dir, base, existing=existing_outputs)
                 override_filename = os.path.splitext(numbered)[0]
 
             convert_pdf_to_md(pdf_path, out_dir, rules, override_filename=override_filename)
+            existing_outputs.add(override_filename + ".md")
             print(f"Converted: {fname}")
         except Exception as e:
             print(f"Error: Failed to convert '{fname}': {e}")
@@ -1379,7 +1476,7 @@ def cmd_pdf_convert(args: str, config: Config, prompt_input_func: Callable[[str]
     """
     Convert a PDF file to Markdown using pdf_tools.
     
-    Usage: pdf-convert <PDF_PATH> [--map maps/dnd5e.yaml]
+    Usage: pdf-convert <PDF_PATH> [--map <map_file>]
     Output is always: {default_vault_name}/Converted/<original-filename>.md
     If exists: prompt to Replace or make numbered Copy.
     
@@ -1393,61 +1490,41 @@ def cmd_pdf_convert(args: str, config: Config, prompt_input_func: Callable[[str]
     
     parts = shlex.split(args)
     if len(parts) < 1:
-        print("Usage: pdf-convert <PDF_PATH> [--map maps/dnd5e.yaml]")
+        print(f"Usage: pdf-convert <PDF_PATH> [--map {DEFAULT_PDF_MAP_PATH}]")
         return
 
     pdf_path = parts[0]
-    map_path = "maps/dnd5e.yaml"
+    map_path = DEFAULT_PDF_MAP_PATH
     for i, p in enumerate(parts[1:], start=1):
         if p == "--map" and i + 1 < len(parts):
             map_path = parts[i+1]
         elif p.startswith("--map="):
             map_path = p.split("=", 1)[1]
 
-    if not os.path.isfile(pdf_path):
-        print(f"File not found: {pdf_path}")
-        return
-
     vault_path, out_dir = _fixed_out_dir(config)
     if not out_dir:
         return
+    try:
+        pdf_path = str(_assert_within(Path(vault_path), Path(pdf_path), "PDF path"))
+    except ValueError as e:
+        print(f"Error: {e}")
+        return
 
-    # Load map rules if provided
+    if not os.path.isfile(pdf_path):
+        print(f"Error: File not found: {pdf_path}.")
+        return
+
     options = {}
-    if os.path.isfile(map_path):
-        try:
-            with open(map_path, "r", encoding="utf-8") as f:
-                options["map_rules"] = yaml.safe_load(f) or {}
-        except FileNotFoundError:
-            print(f"Warning: Map file '{map_path}' not found. Using default rules.")
-        except PermissionError as e:
-            print(f"Warning: Permission denied reading map file '{map_path}': {e}")
-            print("Hint: Check file permissions. Using default rules.")
-        except yaml.YAMLError as e:
-            print(f"Error: Failed to parse map file '{map_path}': {e}")
-            print("Hint: Check that the YAML file is properly formatted. Using default rules.")
-        except OSError as e:
-            print(f"Warning: Failed to read map file '{map_path}': {e}")
-            print("Hint: Check that the file is accessible. Using default rules.")
-        except Exception as e:
-            print(f"Warning: Unexpected error reading map file: {e}")
-            print("Using default rules.")
+    map_rules = _load_pdf_map(map_path)
+    if map_rules:
+        options["map_rules"] = map_rules
 
-    # Desired base name from the PDF
     base = os.path.splitext(os.path.basename(pdf_path))[0]
-    target = os.path.join(out_dir, base + ".md")
-
-    if os.path.exists(target):
-        # Ask user: Replace or Copy
-        print(f"'{base}.md' already exists in {config.default_vault_name}/{config.default_import_subfolder}.")
-        choice = prompt_input_func("Replace (R) or make numbered Copy (C)? ").strip().lower()
-        if choice.startswith('r'):
-            # Will overwrite
-            pass
-        else:
-            # Choose next available numbered name
-            numbered = _next_copy_name(out_dir, base)
-            options["override_filename"] = os.path.splitext(numbered)[0]
+    override_filename = _resolve_pdf_output(out_dir, base, prompt_input_func)
+    if override_filename is None:
+        return
+    if override_filename != base:
+        options["override_filename"] = override_filename
 
     try:
         written = convert_pdf_to_md(Path(pdf_path), Path(out_dir), options)
@@ -1476,7 +1553,7 @@ def cmd_pdf_batch(args: str, config: Config) -> None:
     """
     Convert all PDFs in a folder to Markdown using pdf_tools.
     
-    Usage: pdf-batch <PDF_FOLDER> [--map maps/dnd5e.yaml]
+    Usage: pdf-batch <PDF_FOLDER> [--map <map_file>]
     Output is always: exports/pdf_md/<original-filename>.md
     If exists: auto-number (base1.md, base2.md, ...)
     
@@ -1489,11 +1566,11 @@ def cmd_pdf_batch(args: str, config: Config) -> None:
     
     parts = shlex.split(args)
     if len(parts) < 1:
-        print("Usage: pdf-batch <PDF_FOLDER> [--map maps/dnd5e.yaml]")
+        print(f"Usage: pdf-batch <PDF_FOLDER> [--map {DEFAULT_PDF_MAP_PATH}]")
         return
 
     folder = parts[0]
-    map_path = "maps/dnd5e.yaml"
+    map_path = DEFAULT_PDF_MAP_PATH
     for i, p in enumerate(parts[1:], start=1):
         if p == "--map" and i + 1 < len(parts):
             map_path = parts[i+1]
@@ -1501,7 +1578,7 @@ def cmd_pdf_batch(args: str, config: Config) -> None:
             map_path = p.split("=", 1)[1]
 
     if not os.path.isdir(folder):
-        print(f"Folder not found: {folder}")
+        print(f"Error: Folder not found: {folder}.")
         return
 
     # Set output directory to exports/pdf_md/
@@ -1520,18 +1597,10 @@ def cmd_pdf_batch(args: str, config: Config) -> None:
         print(f"Error: Unexpected error creating output directory: {e}")
         return
 
-    # Load map rules if provided
     options = {}
-    if os.path.isfile(map_path):
-        try:
-            with open(map_path, "r", encoding="utf-8") as f:
-                options["map_rules"] = yaml.safe_load(f) or {}
-        except (FileNotFoundError, PermissionError, yaml.YAMLError, OSError) as e:
-            print(f"Warning: Failed to load map file '{map_path}': {e}")
-            print("Using default rules.")
-        except Exception as e:
-            print(f"Warning: Unexpected error reading map file: {e}")
-            print("Using default rules.")
+    map_rules = _load_pdf_map(map_path)
+    if map_rules:
+        options["map_rules"] = map_rules
 
     try:
         pdf_files = [f for f in os.listdir(folder) if f.lower().endswith(".pdf")]
@@ -1547,18 +1616,21 @@ def cmd_pdf_batch(args: str, config: Config) -> None:
         print(f"Error: Unexpected error reading folder: {e}")
         return
 
+    existing_outputs = set(os.listdir(str(out_dir))) if out_dir.is_dir() else set()
+
     for fname in pdf_files:
         pdf_path = os.path.join(folder, fname)
         try:
             base = os.path.splitext(os.path.basename(pdf_path))[0]
-            target = out_dir / f"{base}.md"
 
             file_options = options.copy()
-            if target.exists():
-                numbered = _next_copy_name(str(out_dir), base)
+            if (base + ".md") in existing_outputs:
+                numbered = _next_copy_name(str(out_dir), base, existing=existing_outputs)
                 file_options["override_filename"] = os.path.splitext(numbered)[0]
 
+            final_name = file_options.get("override_filename", base) + ".md"
             convert_pdf_to_md(Path(pdf_path), out_dir, file_options)
+            existing_outputs.add(final_name)
             print(f"Converted: {fname}")
         except FileNotFoundError as e:
             print(f"Error: PDF file not found '{fname}': {e}")
@@ -1695,12 +1767,12 @@ def cmd_pdf_send_to_vault(args: str, config: Config) -> None:
                         options={"override_filename": pdf_file.stem}
                     )
                 except Exception as e:
-                    print(f"  Error converting PDF: {e}")
+                    print(f"Error: Failed to convert PDF: {e}.")
                     failed_count += 1
                     continue
                 
                 if not converted_files:
-                    print(f"  Error: No output files generated")
+                    print("Error: No output files generated.")
                     failed_count += 1
                     continue
                 
@@ -1711,7 +1783,7 @@ def cmd_pdf_send_to_vault(args: str, config: Config) -> None:
                 try:
                     md_content = clean_markdown(md_content)
                 except Exception as e:
-                    print(f"  Warning: Error cleaning markdown: {e}")
+                    print(f"Warning: Failed to clean markdown: {e}.")
                     # Continue with uncleaned content
                 
                 # Send to vault
@@ -1728,12 +1800,12 @@ def cmd_pdf_send_to_vault(args: str, config: Config) -> None:
                         print(f"  ✓ Saved to: {output_path}")
                     converted_count += 1
                 except Exception as e:
-                    print(f"  Error saving to vault: {e}")
+                    print(f"Error: Failed to save to vault: {e}.")
                     failed_count += 1
                     continue
         
         except Exception as e:
-            print(f"  Unexpected error processing '{pdf_file.name}': {e}")
+            print(f"Error: Unexpected error processing '{pdf_file.name}': {e}.")
             failed_count += 1
             continue
     
@@ -2637,7 +2709,7 @@ def cmd_debug(args: str, config: Config, gpt_client) -> None:
         print(f"Path Exists: {os.path.exists(vault_path)}")
         print(f"Path Is Directory: {os.path.isdir(vault_path) if os.path.exists(vault_path) else 'N/A'}")
     else:
-        print("No current vault set.")
+        print("Error: No vault is currently set.")
     
     # Templates folder
     print("\n--- Templates Folder ---")
@@ -2653,9 +2725,9 @@ def cmd_debug(args: str, config: Config, gpt_client) -> None:
                 template_count = len([f for f in os.listdir(templates_dir) if f.endswith(".md")])
                 print(f"Template Files: {template_count}")
             except Exception as e:
-                print(f"Error reading templates: {e}")
+                print(f"Error: Failed to read templates: {e}")
     else:
-        print(f"Default vault '{config.default_vault_name}' not found in vaults.")
+        print(ERROR_VAULT_NOT_FOUND.format(name=config.default_vault_name))
     
     # OpenAI connection test
     print("\n--- OpenAI Connection Test ---")
@@ -2672,9 +2744,9 @@ def cmd_debug(args: str, config: Config, gpt_client) -> None:
                 print("Connection Test: SUCCEEDED")
                 print(f"Test Response: {test_response[:50]}..." if len(test_response) > 50 else f"Test Response: {test_response}")
             else:
-                print("Connection Test: FAILED (empty response)")
+                print("Error: Connection test failed with an empty response.")
         except Exception as e:
-            print(f"Connection Test: FAILED")
+            print("Error: Connection test failed.")
             print(f"Error: {e}")
     
     print("\n" + "=" * 60)
@@ -2731,16 +2803,530 @@ def initialize_application() -> Tuple[Config, Any, Scheduler, SchedulerContext, 
     return config, gpt_client, scheduler, scheduler_context, history_manager
 
 
+# ---------------------------------------------------------------------------
+# Private command-handler adapters
+#
+# Each _wrap_* function normalises the underlying cmd_* call signature to
+# (args, config[, extras]) so that functools.partial can bind `config` (and
+# any stable extra params such as gpt_client or history_manager) at
+# registration time, while still resolving config attributes lazily at
+# call time — preserving the same behaviour as the original lambdas.
+# ---------------------------------------------------------------------------
+
+def _wrap_showignored(args: str, config: Config) -> None:
+    cmd_showignored(args, config, error)
+
+def _wrap_reset(args: str, config: Config) -> None:
+    cmd_reset(args, config, config.input_provider)
+
+def _wrap_tree(args: str, config: Config) -> None:
+    cmd_tree(args, config.vaults, config.current_vault, error)
+
+def _wrap_createnote(
+    args: str, config: Config, history_manager: HistoryManager
+) -> None:
+    cmd_createnote(
+        args, config.vaults, config.current_vault,
+        config.input_provider, config.default_vault_name,
+        history_manager, config,
+    )
+    completer = getattr(config, "_command_completer", None)
+    if completer is not None:
+        completer.invalidate_cache()
+
+def _wrap_gptwrite(
+    args: str, config: Config, gpt_client: Any, history_manager: HistoryManager
+) -> None:
+    cmd_gptwrite(
+        args, config.vaults, config.current_vault,
+        config.input_provider, gpt_client, history_manager,
+    )
+
+def _wrap_editnote(
+    args: str, config: Config, gpt_client: Any, history_manager: HistoryManager
+) -> None:
+    cmd_editnote(
+        args, config.vaults, config.current_vault,
+        config.input_provider, list_md_files, read_md_file,
+        gpt_client, history_manager,
+    )
+
+def _wrap_showtemplates(args: str, config: Config) -> None:
+    cmd_showtemplates(args, config.vaults, config.input_provider, config.default_vault_name)
+
+def _wrap_createtemplate(
+    args: str, config: Config, history_manager: HistoryManager
+) -> None:
+    cmd_createtemplate(
+        args, config.vaults, config.input_provider,
+        config.default_vault_name, history_manager,
+    )
+
+def _wrap_uploadtemplate(
+    args: str, config: Config, history_manager: HistoryManager
+) -> None:
+    cmd_uploadtemplate(
+        args, config.vaults, config.input_provider,
+        config.default_vault_name, history_manager,
+    )
+
+def _wrap_uploadalltemplates(
+    args: str, config: Config, history_manager: HistoryManager
+) -> None:
+    cmd_uploadalltemplates(
+        args, config.vaults, config.input_provider,
+        config.default_vault_name, history_manager,
+    )
+
+def _wrap_deletetemplate(args: str, config: Config) -> None:
+    cmd_deletetemplate(args, config.vaults, config.input_provider, config.default_vault_name)
+
+def _wrap_addvault(args: str, config: Config, save_vaults_wrapper: Any) -> None:
+    config.current_vault = cmd_addvault(
+        args, config.vaults, config.current_vault, save_vaults_wrapper,
+        config.save_settings, config.input_provider, list_vaults, config.ignored_vaults,
+    )
+    completer = getattr(config, "_command_completer", None)
+    if completer is not None:
+        completer.invalidate_cache()
+
+def _wrap_switch(args: str, config: Config) -> None:
+    config.current_vault = cmd_switch(
+        args, config.vaults, config.current_vault, config.vault_number_map,
+        config.save_settings, config.input_provider, list_vaults,
+        config.ignored_vaults, display_numbered_vaults,
+    )
+    completer = getattr(config, "_command_completer", None)
+    if completer is not None:
+        completer.invalidate_cache()
+
+def _wrap_vaults(args: str, config: Config) -> None:
+    cmd_vaults(config.vaults, config.current_vault, config.ignored_vaults)
+
+def _wrap_ignorevault(args: str, config: Config) -> None:
+    cmd_ignorevault(args, config.ignored_vaults, config.save_settings)
+
+def _wrap_unignorevault(args: str, config: Config) -> None:
+    cmd_unignorevault(args, config.ignored_vaults, config.save_settings)
+
+def _wrap_read(args: str, config: Config) -> None:
+    cmd_read(args, config.vaults, config.current_vault, error)
+
+def _wrap_list(args: str, config: Config) -> None:
+    cmd_list(args, config.vaults, config.current_vault, error)
+
+def _wrap_send(args: str, config: Config, gpt_client: Any) -> None:
+    cmd_send(args, config.vaults, config.current_vault, error, gpt_client)
+
+def _wrap_search(args: str, config: Config) -> None:
+    cmd_search(args, config.vaults, config.current_vault, error)
+
+def _wrap_index(args: str, config: Config) -> None:
+    if config.current_vault:
+        build_search_index(config.vaults[config.current_vault])
+
+def _wrap_srd_index(args: str, config: Config) -> None:
+    cmd_srd_index(args, config.vaults, config.current_vault, error)
+
+def _wrap_search_srd(args: str, config: Config) -> None:
+    cmd_search_srd(args, config.vaults, config.current_vault, error)
+
+def _wrap_pdf2md(args: str, config: Config) -> None:
+    cmd_pdf2md(args, config, config.input_provider)
+
+def _wrap_session_schedule(args: str, config: Config) -> None:
+    schedule_next_session(config.input_provider)
+
+def _wrap_session_discord_export(args: str, config: Config) -> None:
+    cmd_session_discord_export(config.input_provider)
+
+def _wrap_undo(args: str, config: Config, history_manager: HistoryManager) -> None:
+    cmd_undo(args, history_manager, config.vaults, config.current_vault)
+
+def _wrap_history_list(args: str, config: Config, history_manager: HistoryManager) -> None:
+    cmd_history_list(args, history_manager, config.vaults, config.current_vault)
+
+def _wrap_history_restore(
+    args: str, config: Config, history_manager: HistoryManager
+) -> None:
+    cmd_history_restore(args, history_manager, config.vaults, config.current_vault)
+
+def _wrap_tag_add(args: str, config: Config) -> None:
+    cmd_tag_add(args, config.vaults, config.current_vault, error)
+
+def _wrap_tag_remove(args: str, config: Config) -> None:
+    cmd_tag_remove(args, config.vaults, config.current_vault, error)
+
+def _wrap_tag_list(args: str, config: Config) -> None:
+    cmd_tag_list(args, config.vaults, config.current_vault, error)
+
+def _wrap_tag_notes(args: str, config: Config) -> None:
+    cmd_tag_notes(args, config.vaults, config.current_vault, error)
+
+
+# ---------------------------------------------------------------------------
+# Domain-grouped registration helpers
+# ---------------------------------------------------------------------------
+
+def _register_misc_commands(config: Config, gpt_client: Any) -> None:
+    register_command(config, "exit", cmd_exit, "Exit the assistant.")
+    register_command(
+        config, "help",
+        partial(cmd_help, config=config),
+        "Show this help message.",
+    )
+    register_command(
+        config, "showignored",
+        partial(_wrap_showignored, config=config),
+        "Show all currently ignored vaults",
+    )
+    register_command(
+        config, "reset",
+        partial(_wrap_reset, config=config),
+        "Reset all GM Assistant settings to first-launch state (will not delete notes, just assistant config).",
+    )
+    register_command(
+        config, "debug",
+        partial(cmd_debug, config=config, gpt_client=gpt_client),
+        "Print diagnostic information about the system.",
+    )
+
+
+def _register_vault_commands(config: Config, save_vaults_wrapper: Any) -> None:
+    register_command(
+        config, "addvault",
+        partial(_wrap_addvault, config=config, save_vaults_wrapper=save_vaults_wrapper),
+        "Add a new Obsidian vault.",
+    )
+    register_command(
+        config, "switch",
+        partial(_wrap_switch, config=config),
+        "Switch to a different vault.",
+    )
+    register_command(
+        config, "vaults",
+        partial(_wrap_vaults, config=config),
+        "List available vaults.",
+    )
+    register_command(
+        config, "ignorevault",
+        partial(_wrap_ignorevault, config=config),
+        "Ignore a vault from auto-importing.",
+    )
+    register_command(
+        config, "unignorevault",
+        partial(_wrap_unignorevault, config=config),
+        "Stop ignoring a vault.",
+    )
+
+
+def _register_note_commands(config: Config, history_manager: HistoryManager) -> None:
+    register_command(
+        config, "tree",
+        partial(_wrap_tree, config=config),
+        "Show the current vault's folder and note structure (tree view).",
+    )
+    register_command(
+        config, "createnote",
+        partial(_wrap_createnote, config=config, history_manager=history_manager),
+        "Create a new note, optionally from a template. Usage: createnote [--template X] [--dry-run] [var=value ...]",
+    )
+    register_command(
+        config, "read",
+        partial(_wrap_read, config=config),
+        "Read a markdown file: read FILENAME",
+    )
+    register_command(
+        config, "list",
+        partial(_wrap_list, config=config),
+        "List markdown files in the current vault.",
+    )
+    register_command(
+        config, "search",
+        partial(_wrap_search, config=config),
+        "Search notes using title, type, system, or tags (e.g., 'spell system:dnd-5e')",
+    )
+    register_command(
+        config, "index",
+        partial(_wrap_index, config=config),
+        "Build or rebuild the search index for the current vault.",
+    )
+    register_command(
+        config, "srd-index",
+        partial(_wrap_srd_index, config=config),
+        "Build or rebuild the SRD index for the current vault's /SRDs/ directory.",
+    )
+    register_command(
+        config, "search-srd",
+        partial(_wrap_search_srd, config=config),
+        "Search SRD markdown files. Usage: search-srd <query> [tag:<value>] [system:<value>] [name:<value>]",
+    )
+
+
+def _register_template_commands(config: Config, history_manager: HistoryManager) -> None:
+    register_command(
+        config, "showtemplates",
+        partial(_wrap_showtemplates, config=config),
+        "List and preview note templates.",
+    )
+    register_command(
+        config, "template-preview",
+        partial(cmd_template_preview, config=config),
+        "Preview a template with variable replacement. Usage: template-preview <template> [var=value ...]",
+    )
+    register_command(
+        config, "createtemplate",
+        partial(_wrap_createtemplate, config=config, history_manager=history_manager),
+        "Create a new markdown template by typing or pasting content.",
+    )
+    register_command(
+        config, "uploadtemplate",
+        partial(_wrap_uploadtemplate, config=config, history_manager=history_manager),
+        "Upload an existing .md file into the default vault's templates.",
+    )
+    register_command(
+        config, "uploadalltemplates",
+        partial(_wrap_uploadalltemplates, config=config, history_manager=history_manager),
+        "Upload all .md files from a folder into the default vault's templates.",
+    )
+    register_command(
+        config, "deletetemplate",
+        partial(_wrap_deletetemplate, config=config),
+        "Delete a template.",
+    )
+
+
+def _register_gpt_commands(
+    config: Config, gpt_client: Any, history_manager: HistoryManager
+) -> None:
+    register_command(
+        config, "gptwrite",
+        partial(_wrap_gptwrite, config=config, gpt_client=gpt_client, history_manager=history_manager),
+        "Ask ChatGPT a question and optionally save to a note: gptwrite NoteName.md: prompt text",
+    )
+    register_command(
+        config, "editnote",
+        partial(_wrap_editnote, config=config, gpt_client=gpt_client, history_manager=history_manager),
+        "Edit a note with ChatGPT and choose how to save: editnote",
+    )
+    register_command(
+        config, "send",
+        partial(_wrap_send, config=config, gpt_client=gpt_client),
+        "Send a note to ChatGPT: 'send NOTE' or 'upload FOLDER/NOTE'",
+    )
+    register_command(
+        config, "undo",
+        partial(_wrap_undo, config=config, history_manager=history_manager),
+        "Undo the last operation on a note. Usage: undo [note_path]",
+    )
+    register_command(
+        config, "history-list",
+        partial(_wrap_history_list, config=config, history_manager=history_manager),
+        "List history entries for a note. Usage: history-list <note> [limit]",
+    )
+    register_command(
+        config, "history-restore",
+        partial(_wrap_history_restore, config=config, history_manager=history_manager),
+        "Restore a specific version of a note. Usage: history-restore <note> <index>",
+    )
+
+
+def _register_pdf_commands(config: Config) -> None:
+    register_command(
+        config, "pdf2md",
+        partial(_wrap_pdf2md, config=config),
+        'Convert a single PDF to Markdown. Output → default vault/Converted. Usage: pdf2md "PDF_PATH" --map maps/mapname.yaml',
+    )
+    register_command(
+        config, "pdfbatch",
+        partial(cmd_pdfbatch, config=config),
+        'Convert all PDFs in a folder. Output → default vault/Converted. Usage: pdfbatch "PDF_FOLDER" --map maps/mapname.yaml',
+    )
+    # pdf-convert and pdf-batch removed: they were duplicates of pdf2md/pdfbatch
+    # that additionally required the external Marker CLI and wrote to a different
+    # output directory (exports/pdf_md/), creating confusion with no added value.
+    # Use pdf2md / pdfbatch instead — they work without any external dependencies.
+    register_command(
+        config, "pdf-send-to-vault",
+        partial(cmd_pdf_send_to_vault, config=config),
+        "Convert PDF(s) to Markdown and send to current vault's Converted folder. [requires Marker CLI] Usage: pdf-send-to-vault --input <PDF_PATH or FOLDER>",
+    )
+
+
+def _register_scheduler_commands(
+    config: Config, scheduler: Scheduler, scheduler_context: SchedulerContext
+) -> None:
+    register_command(
+        config, "session-schedule",
+        partial(_wrap_session_schedule, config=config),
+        "Schedule the next TTRPG session and generate calendar invite (.ics) file.",
+    )
+    register_command(
+        config, "session-discord-export",
+        partial(_wrap_session_discord_export, config=config),
+        "Schedule a session and export it as a Discord-ready JSON package (includes .ics file).",
+    )
+    register_command(
+        config, "schedule-start",
+        partial(cmd_schedule_start, scheduler=scheduler, context=scheduler_context),
+        "Start the background job scheduler.",
+    )
+    register_command(
+        config, "schedule-stop",
+        partial(cmd_schedule_stop, scheduler=scheduler),
+        "Stop the background job scheduler.",
+    )
+    register_command(
+        config, "schedule-run-once",
+        partial(cmd_schedule_run_once, scheduler=scheduler),
+        "Run all pending scheduled jobs once (synchronous, for testing).",
+    )
+    register_command(
+        config, "schedule-status",
+        partial(cmd_schedule_status, scheduler=scheduler),
+        "Show scheduler status and list registered jobs.",
+    )
+    register_command(
+        config, "schedule-backup-run-now",
+        partial(cmd_schedule_backup_run_now, config=config),
+        "Run the vault backup job immediately.",
+    )
+    register_command(
+        config, "template-sync-now",
+        partial(cmd_template_sync_now, config=config),
+        "Run the template sync job immediately.",
+    )
+    register_command(
+        config, "srd-index-run-now",
+        partial(cmd_srd_index_run_now, config=config),
+        "Run the SRD index rebuild job immediately.",
+    )
+    register_command(
+        config, "cache-clean-now",
+        partial(cmd_cache_clean_now, config=config),
+        "Run the cache clean job immediately.",
+    )
+    register_command(
+        config, "session-reminder-run-now",
+        partial(cmd_session_reminder_run_now, config=config),
+        "Run the session reminder job immediately.",
+    )
+    register_command(
+        config, "snapshot-run-now",
+        partial(cmd_snapshot_run_now, config=config),
+        "Run the daily snapshot job immediately.",
+    )
+
+
+def _register_campaign_commands(config: Config) -> None:
+    register_command(
+        config, "campaign-create",
+        partial(cmd_campaign_create, config=config),
+        "Create a new campaign. Usage: campaign-create <name>",
+    )
+    register_command(
+        config, "campaign-add-pc",
+        partial(cmd_campaign_add_pc, config=config),
+        "Add a party member (PC) to a campaign. Usage: campaign-add-pc <campaign> <name>",
+    )
+    register_command(
+        config, "campaign-add-npc",
+        partial(cmd_campaign_add_npc, config=config),
+        "Add an NPC to a campaign. Usage: campaign-add-npc <campaign> <attitude> <name>",
+    )
+    register_command(
+        config, "campaign-add-location",
+        partial(cmd_campaign_add_location, config=config),
+        "Add a location to a campaign. Usage: campaign-add-location <campaign> <name>",
+    )
+    register_command(
+        config, "session-create",
+        partial(cmd_session_create, config=config),
+        'Create a new session note for a campaign. Usage: session-create <campaign> "<session title>"',
+    )
+    register_command(
+        config, "fgu-import-log",
+        partial(cmd_fgu_import_log, config=config),
+        "Import a Fantasy Grounds chat log and attach it to a session note. Usage: fgu-import-log <campaign> <session> <log_path>",
+    )
+
+
+def _register_voice_commands(config: Config) -> None:
+    register_command(
+        config, "voice-command",
+        partial(cmd_voice_command, config=config),
+        "Parse a text command into a VoiceCommand and write it to the inbox. Usage: voice-command <text>",
+    )
+    register_command(
+        config, "voice-commands-from-transcript",
+        partial(cmd_voice_commands_from_transcript, config=config),
+        "Extract VoiceCommands from a transcript file and enqueue them. Usage: voice-commands-from-transcript <path>",
+    )
+    register_command(
+        config, "voice-commands-from-audio",
+        partial(cmd_voice_commands_from_audio, config=config),
+        "Transcribe an audio file, extract wake-word commands, and enqueue them. Usage: voice-commands-from-audio <path>",
+    )
+    register_command(
+        config, "session-audio-ingest",
+        partial(cmd_session_audio_ingest, config=config),
+        'Attach audio to a session, transcribe it, attach transcript, and enqueue wake-word commands. Usage: session-audio-ingest "<campaign_name>" "<session_name>" <audio_path>',
+    )
+    register_command(
+        config, "voice-enable",
+        partial(cmd_voice_enable, config=config),
+        "Enable voice command features (transcript/audio parsing).",
+    )
+    register_command(
+        config, "voice-disable",
+        partial(cmd_voice_disable, config=config),
+        "Disable voice command features.",
+    )
+    register_command(
+        config, "voice-status",
+        partial(cmd_voice_status, config=config),
+        "Show whether voice commands are enabled or disabled.",
+    )
+    register_command(
+        config, "voice-commands-process",
+        partial(cmd_voice_commands_process, config=config),
+        "Process all queued VoiceCommand files in the inbox. Usage: voice-commands-process [--dry-run]",
+    )
+
+
+def _register_tag_commands(config: Config) -> None:
+    register_command(
+        config, "tag-add",
+        partial(_wrap_tag_add, config=config),
+        "Add a tag to a note. Usage: tag-add <note> <tag>",
+    )
+    register_command(
+        config, "tag-remove",
+        partial(_wrap_tag_remove, config=config),
+        "Remove a tag from a note. Usage: tag-remove <note> <tag>",
+    )
+    register_command(
+        config, "tag-list",
+        partial(_wrap_tag_list, config=config),
+        "List all tags in the current vault.",
+    )
+    register_command(
+        config, "tag-notes",
+        partial(_wrap_tag_notes, config=config),
+        "List all notes with a specific tag. Usage: tag-notes <tag>",
+    )
+
+
 def register_all_commands(
     config: Config,
     gpt_client: Any,
     scheduler: Scheduler,
     scheduler_context: SchedulerContext,
-    history_manager: HistoryManager
+    history_manager: HistoryManager,
 ) -> None:
     """
     Register all CLI commands with the command registry.
-    
+
     Args:
         config: Configuration object
         gpt_client: GPT client instance
@@ -2749,386 +3335,16 @@ def register_all_commands(
         history_manager: History manager instance for undo functionality
     """
     save_vaults_wrapper = create_save_vaults_wrapper(config)
-    
-    register_command(config, "exit", cmd_exit, "Exit the assistant.")
-    register_command(
-        config,
-        "help",
-        lambda args: cmd_help(args, config),
-        "Show this help message."
-    )
-    register_command(
-        config,
-        "showignored",
-        lambda args: cmd_showignored(args, config, error),
-        "Show all currently ignored vaults"
-    )
-    register_command(
-        config,
-        "reset",
-        lambda args: cmd_reset(args, config, config.input_provider),
-        "Reset all GM Assistant settings to first-launch state (will not delete notes, just assistant config)."
-    )
-    register_command(
-        config,
-        "tree",
-        lambda args: cmd_tree(args, config.vaults, config.current_vault, error),
-        "Show the current vault's folder and note structure (tree view)."
-    )
-    register_command(
-        config,
-        "createnote",
-        lambda args: cmd_createnote(args, config.vaults, config.current_vault, config.input_provider, config.default_vault_name, history_manager, config),
-        "Create a new note, optionally from a template. Usage: createnote [--template X] [--dry-run] [var=value ...]"
-    )
-    register_command(
-        config,
-        "gptwrite",
-        lambda args: cmd_gptwrite(args, config.vaults, config.current_vault, config.input_provider, gpt_client, history_manager),
-        "Ask ChatGPT a question and optionally save to a note: gptwrite NoteName.md: prompt text"
-    )
-    register_command(
-        config,
-        "editnote",
-        lambda args: cmd_editnote(args, config.vaults, config.current_vault, config.input_provider, list_md_files, read_md_file, gpt_client, history_manager),
-        "Edit a note with ChatGPT and choose how to save: editnote"
-    )
-    register_command(
-        config,
-        "showtemplates",
-        lambda args: cmd_showtemplates(args, config.vaults, config.input_provider, config.default_vault_name),
-        "List and preview note templates."
-    )
-    register_command(
-        config,
-        "template-preview",
-        lambda args: cmd_template_preview(args, config),
-        "Preview a template with variable replacement. Usage: template-preview <template> [var=value ...]"
-    )
-    register_command(
-        config,
-        "createtemplate",
-        lambda args: cmd_createtemplate(args, config.vaults, config.input_provider, config.default_vault_name, history_manager),
-        "Create a new markdown template by typing or pasting content."
-    )
-    register_command(
-        config,
-        "uploadtemplate",
-        lambda args: cmd_uploadtemplate(args, config.vaults, config.input_provider, config.default_vault_name, history_manager),
-        "Upload an existing .md file into the default vault's templates."
-    )
-    register_command(
-        config,
-        "uploadalltemplates",
-        lambda args: cmd_uploadalltemplates(args, config.vaults, config.input_provider, config.default_vault_name, history_manager),
-        "Upload all .md files from a folder into the default vault's templates."
-    )
-    register_command(
-        config,
-        "deletetemplate",
-        lambda args: cmd_deletetemplate(args, config.vaults, config.input_provider, config.default_vault_name),
-        "Delete a template."
-    )
-    register_command(
-        config,
-        "addvault",
-        lambda args: setattr(config, 'current_vault', cmd_addvault(args, config.vaults, config.current_vault, save_vaults_wrapper, config.save_settings, config.input_provider, list_vaults, config.ignored_vaults)),
-        "Add a new Obsidian vault."
-    )
-    register_command(
-        config,
-        "switch",
-        lambda args: setattr(config, 'current_vault', cmd_switch(args, config.vaults, config.current_vault, config.vault_number_map, config.save_settings, config.input_provider, list_vaults, config.ignored_vaults, display_numbered_vaults)),
-        "Switch to a different vault."
-    )
-    register_command(
-        config,
-        "vaults",
-        lambda args: cmd_vaults(config.vaults, config.current_vault, config.ignored_vaults),
-        "List available vaults."
-    )
-    register_command(
-        config,
-        "ignorevault",
-        lambda args: cmd_ignorevault(args, config.ignored_vaults, config.save_settings),
-        "Ignore a vault from auto-importing."
-    )
-    register_command(
-        config,
-        "unignorevault",
-        lambda args: cmd_unignorevault(args, config.ignored_vaults, config.save_settings),
-        "Stop ignoring a vault."
-    )
-    register_command(
-        config,
-        "read",
-        lambda args: cmd_read(args, config.vaults, config.current_vault, error),
-        "Read a markdown file: read FILENAME"
-    )
-    register_command(
-        config,
-        "list",
-        lambda args: cmd_list(args, config.vaults, config.current_vault, error),
-        "List markdown files in the current vault."
-    )
-    register_command(
-        config,
-        "send",
-        lambda args: cmd_send(args, config.vaults, config.current_vault, error, gpt_client),
-        "Send a note to ChatGPT: 'send NOTE' or 'upload FOLDER/NOTE'"
-    )
-
-    register_command(
-        config,
-        "search",
-        lambda args: cmd_search(args, config.vaults, config.current_vault, error),
-        "Search notes using title, type, system, or tags (e.g., 'spell system:dnd-5e')"
-    )
-    register_command(
-        config,
-        "index",
-        lambda args: build_search_index(config.vaults[config.current_vault]) if config.current_vault else None,
-        "Build or rebuild the search index for the current vault."
-    )
-    register_command(
-        config,
-        "srd-index",
-        lambda args: cmd_srd_index(args, config.vaults, config.current_vault, error),
-        "Build or rebuild the SRD index for the current vault's /SRDs/ directory."
-    )
-    register_command(
-        config,
-        "search-srd",
-        lambda args: cmd_search_srd(args, config.vaults, config.current_vault, error),
-        "Search SRD markdown files. Usage: search-srd <query> [tag:<value>] [system:<value>] [name:<value>]"
-    )
-    register_command(
-        config,
-        "pdf2md",
-        lambda args: cmd_pdf2md(args, config, config.input_provider),
-        "Convert a single PDF to Markdown. Output → default vault/Converted. Usage: pdf2md \"PDF_PATH\" --map maps/mapname.yaml"
-    )
-    register_command(
-        config,
-        "pdfbatch",
-        lambda args: cmd_pdfbatch(args, config),
-        "Convert all PDFs in a folder. Output → default vault/Converted. Usage: pdfbatch \"PDF_FOLDER\" --map maps/mapname.yaml"
-    )
-    # pdf-convert and pdf-batch removed: they were duplicates of pdf2md/pdfbatch
-    # that additionally required the external Marker CLI and wrote to a different
-    # output directory (exports/pdf_md/), creating confusion with no added value.
-    # Use pdf2md / pdfbatch instead — they work without any external dependencies.
-    register_command(
-        config,
-        "pdf-send-to-vault",
-        lambda args: cmd_pdf_send_to_vault(args, config),
-        "Convert PDF(s) to Markdown and send to current vault's Converted folder. [requires Marker CLI] Usage: pdf-send-to-vault --input <PDF_PATH or FOLDER>"
-    )
-    register_command(
-        config,
-        "session-schedule",
-        lambda args: schedule_next_session(config.input_provider),
-        "Schedule the next TTRPG session and generate calendar invite (.ics) file."
-    )
-    register_command(
-        config,
-        "session-discord-export",
-        lambda args: cmd_session_discord_export(config.input_provider),
-        "Schedule a session and export it as a Discord-ready JSON package (includes .ics file)."
-    )
-    register_command(
-        config,
-        "schedule-start",
-        lambda args: cmd_schedule_start(args, scheduler, scheduler_context),
-        "Start the background job scheduler."
-    )
-    register_command(
-        config,
-        "schedule-stop",
-        lambda args: cmd_schedule_stop(args, scheduler),
-        "Stop the background job scheduler."
-    )
-    register_command(
-        config,
-        "schedule-run-once",
-        lambda args: cmd_schedule_run_once(args, scheduler),
-        "Run all pending scheduled jobs once (synchronous, for testing)."
-    )
-    register_command(
-        config,
-        "schedule-status",
-        lambda args: cmd_schedule_status(args, scheduler),
-        "Show scheduler status and list registered jobs."
-    )
-    register_command(
-        config,
-        "schedule-backup-run-now",
-        lambda args: cmd_schedule_backup_run_now(args, config),
-        "Run the vault backup job immediately."
-    )
-    register_command(
-        config,
-        "template-sync-now",
-        lambda args: cmd_template_sync_now(args, config),
-        "Run the template sync job immediately."
-    )
-    register_command(
-        config,
-        "srd-index-run-now",
-        lambda args: cmd_srd_index_run_now(args, config),
-        "Run the SRD index rebuild job immediately."
-    )
-    register_command(
-        config,
-        "cache-clean-now",
-        lambda args: cmd_cache_clean_now(args, config),
-        "Run the cache clean job immediately."
-    )
-    register_command(
-        config,
-        "session-reminder-run-now",
-        lambda args: cmd_session_reminder_run_now(args, config),
-        "Run the session reminder job immediately."
-    )
-    register_command(
-        config,
-        "snapshot-run-now",
-        lambda args: cmd_snapshot_run_now(args, config),
-        "Run the daily snapshot job immediately."
-    )
-    register_command(
-        config,
-        "campaign-create",
-        lambda args: cmd_campaign_create(args, config),
-        "Create a new campaign. Usage: campaign-create <name>"
-    )
-    register_command(
-        config,
-        "campaign-add-pc",
-        lambda args: cmd_campaign_add_pc(args, config),
-        "Add a party member (PC) to a campaign. Usage: campaign-add-pc <campaign> <name>"
-    )
-    register_command(
-        config,
-        "campaign-add-npc",
-        lambda args: cmd_campaign_add_npc(args, config),
-        "Add an NPC to a campaign. Usage: campaign-add-npc <campaign> <attitude> <name>"
-    )
-    register_command(
-        config,
-        "campaign-add-location",
-        lambda args: cmd_campaign_add_location(args, config),
-        "Add a location to a campaign. Usage: campaign-add-location <campaign> <name>"
-    )
-    register_command(
-        config,
-        "session-create",
-        lambda args: cmd_session_create(args, config),
-        "Create a new session note for a campaign. Usage: session-create <campaign> \"<session title>\""
-    )
-    register_command(
-        config,
-        "fgu-import-log",
-        lambda args: cmd_fgu_import_log(args, config),
-        "Import a Fantasy Grounds chat log and attach it to a session note. Usage: fgu-import-log <campaign> <session> <log_path>"
-    )
-    register_command(
-        config,
-        "voice-command",
-        lambda args: cmd_voice_command(args, config),
-        "Parse a text command into a VoiceCommand and write it to the inbox. Usage: voice-command <text>"
-    )
-    register_command(
-        config,
-        "voice-commands-from-transcript",
-        lambda args: cmd_voice_commands_from_transcript(args, config),
-        "Extract VoiceCommands from a transcript file and enqueue them. Usage: voice-commands-from-transcript <path>"
-    )
-    register_command(
-        config,
-        "voice-commands-from-audio",
-        lambda args: cmd_voice_commands_from_audio(args, config),
-        "Transcribe an audio file, extract wake-word commands, and enqueue them. Usage: voice-commands-from-audio <path>"
-    )
-    register_command(
-        config,
-        "session-audio-ingest",
-        lambda args: cmd_session_audio_ingest(args, config),
-        'Attach audio to a session, transcribe it, attach transcript, and enqueue wake-word commands. Usage: session-audio-ingest "<campaign_name>" "<session_name>" <audio_path>'
-    )
-    register_command(
-        config,
-        "voice-enable",
-        lambda args: cmd_voice_enable(args, config),
-        "Enable voice command features (transcript/audio parsing)."
-    )
-    register_command(
-        config,
-        "voice-disable",
-        lambda args: cmd_voice_disable(args, config),
-        "Disable voice command features."
-    )
-    register_command(
-        config,
-        "voice-status",
-        lambda args: cmd_voice_status(args, config),
-        "Show whether voice commands are enabled or disabled."
-    )
-    register_command(
-        config,
-        "voice-commands-process",
-        lambda args: cmd_voice_commands_process(args, config),
-        "Process all queued VoiceCommand files in the inbox. Usage: voice-commands-process [--dry-run]"
-    )
-    register_command(
-        config,
-        "debug",
-        lambda args: cmd_debug(args, config, gpt_client),
-        "Print diagnostic information about the system."
-    )
-    register_command(
-        config,
-        "undo",
-        lambda args: cmd_undo(args, history_manager, config.vaults, config.current_vault),
-        "Undo the last operation on a note. Usage: undo [note_path]"
-    )
-    register_command(
-        config,
-        "history-list",
-        lambda args: cmd_history_list(args, history_manager, config.vaults, config.current_vault),
-        "List history entries for a note. Usage: history-list <note> [limit]"
-    )
-    register_command(
-        config,
-        "history-restore",
-        lambda args: cmd_history_restore(args, history_manager, config.vaults, config.current_vault),
-        "Restore a specific version of a note. Usage: history-restore <note> <index>"
-    )
-    register_command(
-        config,
-        "tag-add",
-        lambda args: cmd_tag_add(args, config.vaults, config.current_vault, error),
-        "Add a tag to a note. Usage: tag-add <note> <tag>"
-    )
-    register_command(
-        config,
-        "tag-remove",
-        lambda args: cmd_tag_remove(args, config.vaults, config.current_vault, error),
-        "Remove a tag from a note. Usage: tag-remove <note> <tag>"
-    )
-    register_command(
-        config,
-        "tag-list",
-        lambda args: cmd_tag_list(args, config.vaults, config.current_vault, error),
-        "List all tags in the current vault."
-    )
-    register_command(
-        config,
-        "tag-notes",
-        lambda args: cmd_tag_notes(args, config.vaults, config.current_vault, error),
-        "List all notes with a specific tag. Usage: tag-notes <tag>"
-    )
-
+    _register_misc_commands(config, gpt_client)
+    _register_vault_commands(config, save_vaults_wrapper)
+    _register_note_commands(config, history_manager)
+    _register_template_commands(config, history_manager)
+    _register_gpt_commands(config, gpt_client, history_manager)
+    _register_pdf_commands(config)
+    _register_scheduler_commands(config, scheduler, scheduler_context)
+    _register_campaign_commands(config)
+    _register_voice_commands(config)
+    _register_tag_commands(config)
 
 def run_command(
     command_name: str,
@@ -3190,8 +3406,10 @@ def run_main_loop(
         auto_suggest=AutoSuggestFromHistory()
     )
     
-    # Build the completer
+    # Build the completer and stash it on config so vault-mutating
+    # wrappers can call invalidate_cache() without a circular dependency.
     command_completer = build_completer(config, error_func)
+    config._command_completer = command_completer  # type: ignore[attr-defined]
     
     prompt_kwargs: Dict[str, Any] = {
         "completer": command_completer,
@@ -3220,45 +3438,14 @@ def run_main_loop(
             print("\nExiting GM Assistant. Goodbye!")
             break
         except EOFError:
-            print("\nExiting GM Assistant. Goodbye!")
             break
 
 
 def main() -> None:
-    """
-    Main entry point for GM Assistant.
-
-    Initializes the application, registers commands, and runs the main loop.
-    """
-    install_error_handler()  # Must be first — captures crashes during init too
-
-    # Initialize application components
+    """Main entry point for the GM Assistant CLI."""
+    install_error_handler()
     config, gpt_client, scheduler, scheduler_context, history_manager = initialize_application()
-    
-    # Print startup summary
-    print_startup_summary(config)
-    
-    # Ensure we have a current vault
-    save_vaults_wrapper = create_save_vaults_wrapper(config)
-    if not config.current_vault:
-        error("no_vault")
-        while not config.current_vault:
-            user_path = config.input_provider("Please enter the path to your Obsidian vault folder (or type 'quit' to exit): ").strip()
-            if user_path.lower() == "quit":
-                print("Exiting GM Assistant. Goodbye!")
-                return
-            config.current_vault = add_vault(
-                user_path,
-                config.vaults,
-                config.current_vault,
-                save_vaults_wrapper,
-                config.save_settings
-            )
-    
-    # Register all commands
     register_all_commands(config, gpt_client, scheduler, scheduler_context, history_manager)
-    
-    # Run main loop
     run_main_loop(config, error)
 
 

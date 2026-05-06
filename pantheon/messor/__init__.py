@@ -13,6 +13,8 @@ from .fgu import (
     parse_fgu_chat_log,
     attach_fgu_log_to_session,
 )
+from .fgu_export import export_entities_to_xml, read_fgu_notes_in_vault
+from .fgu_import import FGUEntityParser, detect_ruleset, import_campaign_entities
 from .audio_session import (
     Transcript,
     transcribe_audio,
@@ -31,4 +33,3 @@ __all__ = [
     "attach_transcript_to_session",
     "attach_audio_and_extract_commands_for_session",
 ]
-
