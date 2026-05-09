@@ -73,6 +73,7 @@ except ImportError:
     from PySide6.QtGui import QPixmap  # type: ignore
 
 from ui.theme import ACCENT, ACCENT2, BG, BORDER, MUTED, PANEL, SUCCESS, SURFACE, TEXT, WARNING, ERROR
+from pantheon.vervactor.workspace import load_scene_data, save_scene_data
 
 # ── Optional dependency ────────────────────────────────────────────────────────
 
@@ -503,8 +504,8 @@ class SpotifyPanel(QDockWidget):
 
     def _load_scene_config(self) -> None:
         try:
-            if SCENE_CONFIG_PATH.exists():
-                data = json.loads(SCENE_CONFIG_PATH.read_text(encoding="utf-8"))
+            data = load_scene_data(self._config, "spotify", SCENE_CONFIG_PATH, {})
+            if isinstance(data, dict):
                 for _, tag in SCENE_TAGS:
                     if tag in data:
                         self._scene_config[tag] = data[tag]
@@ -513,10 +514,7 @@ class SpotifyPanel(QDockWidget):
 
     def _save_scene_config(self) -> None:
         try:
-            SCENE_CONFIG_PATH.write_text(
-                json.dumps(self._scene_config, indent=2, ensure_ascii=False),
-                encoding="utf-8",
-            )
+            save_scene_data(self._config, "spotify", SCENE_CONFIG_PATH, self._scene_config)
         except Exception:
             pass
 

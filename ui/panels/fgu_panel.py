@@ -65,6 +65,7 @@ from pantheon.messor import (
     export_entities_to_xml,
     read_fgu_notes_in_vault,
 )
+from pantheon.vervactor.workspace import WorkspaceObjectRef, set_current_object
 
 # Tab indices
 TAB_CHARS = 0
@@ -378,6 +379,16 @@ class FGUPanel(QDockWidget):
                 self._import_log.append(f"ERROR: {err}")
             summary = f"Imported {imported_count} entities. Errors: {len(errors)}"
             self._import_log.append(summary)
+            set_current_object(
+                self._config,
+                WorkspaceObjectRef(
+                    kind="fgu_import",
+                    path=str(Path(campaign_data)),
+                    title=Path(campaign_data).name,
+                    source="fgu_panel",
+                    metadata={"imported_count": imported_count, "errors": len(errors)},
+                ),
+            )
             if errors:
                 QMessageBox.warning(self, "Import Completed with Errors", summary)
             else:
@@ -434,6 +445,16 @@ class FGUPanel(QDockWidget):
                 self._export_log.append(f"ERROR: {err}")
             summary = f"Exported {exported_count} entities. Errors: {len(errors)}"
             self._export_log.append(summary)
+            set_current_object(
+                self._config,
+                WorkspaceObjectRef(
+                    kind="fgu_export",
+                    path=str(Path(self._export_path)),
+                    title=Path(self._export_path).name,
+                    source="fgu_panel",
+                    metadata={"exported_count": exported_count, "errors": len(errors)},
+                ),
+            )
             if errors:
                 QMessageBox.warning(self, "Export Completed with Errors", summary)
             else:
@@ -752,17 +773,32 @@ class FGUPanel(QDockWidget):
         if reply != QMessageBox.StandardButton.Yes:
             return
 
-        imported, errors = 0, []
-        for entity in entities:
-            try:
-                import_entity_to_vault(entity, vault_path, overwrite=True)
-                imported += 1
-            except Exception as e:
-                errors.append(f"{entity.name}: {e}")
+        entity_types = {
+            TAB_CHARS: ("pc",),
+            TAB_NPCS: ("npc",),
+            TAB_ITEMS: ("item",),
+        }.get(tab, ())
+
+        imported, errors = import_campaign_entities(
+            Path(self._campaign_combo.currentData()),
+            self._config,
+            entity_types=entity_types,
+            overwrite=True,
+        )
 
         msg = f"Imported {imported}/{len(entities)}"
         if errors:
             QMessageBox.warning(self, "Import Errors", "\n".join(errors[:10]))
+        set_current_object(
+            self._config,
+            WorkspaceObjectRef(
+                kind="fgu_import",
+                path=str(Path(self._campaign_combo.currentData())),
+                title=Path(self._campaign_combo.currentData()).name,
+                source="fgu_panel",
+                metadata={"imported_count": imported, "errors": len(errors)},
+            ),
+        )
         self._db_status.setText(msg)
         self.status_message.emit(msg)
 

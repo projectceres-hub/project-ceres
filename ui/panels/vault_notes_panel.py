@@ -31,7 +31,7 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, List, Optional
 
 try:
     from PyQt5.QtWidgets import (
@@ -56,6 +56,11 @@ except ImportError:
     _SIGNAL = "pyside6"
 
 from ui.theme import ACCENT, MUTED, TEXT
+from pantheon.vervactor.workspace import (
+    WorkspaceObjectRef,
+    load_workspace_state,
+    set_current_object,
+)
 
 
 class VaultNotesPanel(QDockWidget):
@@ -81,6 +86,8 @@ class VaultNotesPanel(QDockWidget):
         self._run_command = run_command
         self._current_vault_path: Optional[Path] = None
         self._current_note_path: Optional[Path] = None  # note currently open in viewer
+        self._back_stack: List[Path] = []
+        self._forward_stack: List[Path] = []
 
         self.setObjectName("VaultNotesPanel")
         self.setAllowedAreas(
@@ -97,6 +104,7 @@ class VaultNotesPanel(QDockWidget):
         self._build_ui()
         self._populate_vault_selector()
         self._refresh_tree()
+        self._restore_workspace_object()
 
     # ── UI construction ────────────────────────────────────────────────────────
 
@@ -206,6 +214,18 @@ class VaultNotesPanel(QDockWidget):
         back_btn.clicked.connect(self._show_browser)
         top_row.addWidget(back_btn)
 
+        self._nav_back_btn = QPushButton("<")
+        self._nav_back_btn.setFixedWidth(30)
+        self._nav_back_btn.setToolTip("Previous viewed note")
+        self._nav_back_btn.clicked.connect(self._navigate_back)
+        top_row.addWidget(self._nav_back_btn)
+
+        self._nav_forward_btn = QPushButton(">")
+        self._nav_forward_btn.setFixedWidth(30)
+        self._nav_forward_btn.setToolTip("Next viewed note")
+        self._nav_forward_btn.clicked.connect(self._navigate_forward)
+        top_row.addWidget(self._nav_forward_btn)
+
         self._viewer_title = QLabel("")
         self._viewer_title.setStyleSheet(
             f"color: {ACCENT}; font-weight: bold; font-size: 13px;"
@@ -231,6 +251,7 @@ class VaultNotesPanel(QDockWidget):
             "border: 1px solid #313244; border-radius: 4px; padding: 8px; }"
         )
         layout.addWidget(self._note_browser)
+        self._update_nav_buttons()
 
         return page
 
@@ -375,11 +396,23 @@ class VaultNotesPanel(QDockWidget):
 
     # ── Note viewer ────────────────────────────────────────────────────────────
 
-    def _open_note_viewer(self, path: Path) -> None:
+    def _open_note_viewer(self, path: Path, push_history: bool = True) -> None:
         """Load *path* into the embedded viewer and switch to it."""
+        if push_history and self._current_note_path and self._current_note_path != path:
+            self._back_stack.append(self._current_note_path)
+            self._forward_stack.clear()
         self._current_note_path = path
         self._viewer_title.setText(path.stem)
         self.note_opened.emit(str(path))
+        set_current_object(
+            self._config,
+            WorkspaceObjectRef(
+                kind="note",
+                path=str(path),
+                title=path.stem,
+                source="vault_notes",
+            ),
+        )
 
         try:
             raw = path.read_text(encoding="utf-8", errors="replace")
@@ -417,12 +450,41 @@ class VaultNotesPanel(QDockWidget):
 
         self._note_browser.verticalScrollBar().setValue(0)
         self._stack.setCurrentIndex(1)
+        self._update_nav_buttons()
         self.status_message.emit(f"Viewing: {path.name}")
 
     def _show_browser(self) -> None:
         """Return to the vault browser page."""
         self._stack.setCurrentIndex(0)
-        self._current_note_path = None
+
+    def _navigate_back(self) -> None:
+        if not self._back_stack or self._current_note_path is None:
+            return
+        target = self._back_stack.pop()
+        self._forward_stack.append(self._current_note_path)
+        self._open_note_viewer(target, push_history=False)
+
+    def _navigate_forward(self) -> None:
+        if not self._forward_stack or self._current_note_path is None:
+            return
+        target = self._forward_stack.pop()
+        self._back_stack.append(self._current_note_path)
+        self._open_note_viewer(target, push_history=False)
+
+    def _update_nav_buttons(self) -> None:
+        if hasattr(self, "_nav_back_btn"):
+            self._nav_back_btn.setEnabled(bool(self._back_stack))
+        if hasattr(self, "_nav_forward_btn"):
+            self._nav_forward_btn.setEnabled(bool(self._forward_stack))
+
+    def _restore_workspace_object(self) -> None:
+        state = load_workspace_state(self._config)
+        ref = state.current_object
+        if not ref or ref.kind != "note" or not ref.path:
+            return
+        path = Path(ref.path)
+        if path.exists():
+            self._open_note_viewer(path, push_history=False)
 
     def _open_current_in_obsidian(self) -> None:
         """Open the currently-viewed note in Obsidian (external)."""

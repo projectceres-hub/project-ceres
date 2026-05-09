@@ -50,6 +50,12 @@ except ImportError:
     from PySide6.QtCore import Qt, Signal  # type: ignore
 
 from ui.theme import ACCENT, BG, BORDER, MUTED, PANEL, SURFACE, TEXT
+from pantheon.vervactor.workspace import (
+    load_scene_data,
+    load_workspace_state,
+    save_scene_data,
+    save_workspace_state,
+)
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 SCENES_PATH = _PROJECT_ROOT / "master_scenes.json"
@@ -148,12 +154,14 @@ class MasterScenePanel(QDockWidget):
     def __init__(
         self,
         panel_refs: Dict[str, Any],
+        config: Any = None,
         parent=None,
     ) -> None:
         """Create the dock and load scene definitions from ``master_scenes.json``.
 
         Args:
             panel_refs: Map of panel key → live panel instance (or None).
+            config: Application config used for active-vault scene storage.
             parent: Optional Qt parent widget.
         """
         super().__init__("Master Scenes", parent)
@@ -166,6 +174,7 @@ class MasterScenePanel(QDockWidget):
         )
 
         self._panel_refs: Dict[str, Any] = dict(panel_refs)
+        self._config = config
         self._scenes: List[Dict[str, Any]] = self._load_scenes()
         self._slot_buttons: List[QPushButton] = []
 
@@ -266,18 +275,16 @@ class MasterScenePanel(QDockWidget):
         """Load from ``master_scenes.json``; fill missing slots with defaults."""
         out: List[Dict[str, Any]] = []
         try:
-            if SCENES_PATH.exists():
-                raw = SCENES_PATH.read_text(encoding="utf-8")
-                data = json.loads(raw)
-                if isinstance(data, list):
-                    for i in range(NUM_SLOTS):
-                        if i < len(data) and isinstance(data[i], dict):
-                            merged = copy.deepcopy(_DEFAULT_SCENE)
-                            merged.update(data[i])
-                            out.append(merged)
-                        else:
-                            out.append(copy.deepcopy(_DEFAULT_SCENE))
-                    return out
+            data = load_scene_data(self._config, "master_scenes", SCENES_PATH, [])
+            if isinstance(data, list):
+                for i in range(NUM_SLOTS):
+                    if i < len(data) and isinstance(data[i], dict):
+                        merged = copy.deepcopy(_DEFAULT_SCENE)
+                        merged.update(data[i])
+                        out.append(merged)
+                    else:
+                        out.append(copy.deepcopy(_DEFAULT_SCENE))
+                return out
         except (OSError, json.JSONDecodeError):
             pass
         return [copy.deepcopy(_DEFAULT_SCENE) for _ in range(NUM_SLOTS)]
@@ -285,10 +292,7 @@ class MasterScenePanel(QDockWidget):
     def _save_scenes(self) -> None:
         """Persist ``self._scenes`` to ``master_scenes.json``."""
         try:
-            SCENES_PATH.write_text(
-                json.dumps(self._scenes, indent=2, ensure_ascii=False),
-                encoding="utf-8",
-            )
+            save_scene_data(self._config, "master_scenes", SCENES_PATH, self._scenes)
         except OSError:
             pass
 
@@ -340,6 +344,9 @@ class MasterScenePanel(QDockWidget):
             except Exception:
                 pass
 
+        state = load_workspace_state(self._config)
+        state.current_scene = name
+        save_workspace_state(self._config, state)
         self.status_message.emit(f"Playing scene: {name}")
         self._status_lbl.setText(f"Last: {name}")
 

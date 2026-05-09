@@ -56,6 +56,7 @@ from ui.theme import (
     ACCENT, ACCENT2, BG, BORDER, ERROR, MUTED,
     PANEL, SUCCESS, SURFACE, TEXT, WARNING,
 )
+from pantheon.vervactor.workspace import load_scene_data, save_scene_data
 
 # ── Optional dependencies ──────────────────────────────────────────────────────
 
@@ -1157,20 +1158,19 @@ class LocalMusicPanel(QDockWidget):
             for s in self._scenes
         ]
         try:
-            SCENE_CONFIG_PATH.write_text(json.dumps(data, indent=2))
+            save_scene_data(self._config, "local_music", SCENE_CONFIG_PATH, data)
         except OSError:
             pass
 
     def _load_scenes(self) -> None:
         """Load scene slots from *local_music_scenes.json* if it exists."""
-        if not SCENE_CONFIG_PATH.exists():
-            return
         try:
-            data = json.loads(SCENE_CONFIG_PATH.read_text())
-            for i, entry in enumerate(data[:len(self._scenes)]):
-                self._scenes[i].name      = entry.get("name", self._scenes[i].name)
-                self._scenes[i].path      = entry.get("path", "")
-                self._scenes[i].slot_type = entry.get("type", "")
+            data = load_scene_data(self._config, "local_music", SCENE_CONFIG_PATH, [])
+            if isinstance(data, list):
+                for i, entry in enumerate(data[:len(self._scenes)]):
+                    self._scenes[i].name      = entry.get("name", self._scenes[i].name)
+                    self._scenes[i].path      = entry.get("path", "")
+                    self._scenes[i].slot_type = entry.get("type", "")
         except (OSError, json.JSONDecodeError):
             pass
 

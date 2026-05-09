@@ -1,32 +1,47 @@
-"""
-Panel modules for Project Ceres UI.
+"""Panel exports for Project Ceres UI.
 
-Each panel is a QDockWidget that can be docked, floated, or hidden.
-Panels communicate with the backend through run_command() or directly
-via the Config reference passed at construction time.
-
-Available panels
-----------------
-VaultNotesPanel  — vault selector + note browser + quick actions     [ACTIVE]
-ConsolePanel     — raw command input + scrollable output log          [ACTIVE]
-SoundboardPanel  — load a folder of audio files and trigger them      [ACTIVE]
-DiscordPanel     — Discord bot connection + session recording         [SCAFFOLD]
-SpotifyPanel     — Spotify playback + scene playlist quick-launch     [SCAFFOLD]
-FGUPanel         — Fantasy Grounds Unity campaign browser + import    [SCAFFOLD]
+Each panel is the current shipped implementation for its feature area.
+Panels are dockable unless noted otherwise.
 """
 
+from .browser_panel import BrowserPanel
+from .chat_panel import ChatPanel
+from .console_panel import ConsolePanel
+from .discord_panel import DiscordPanel
+from .equalizer_panel import EqualizerPanel
+from .fgu_panel import FGUPanel
+from .local_music_panel import LocalMusicPanel
+from .master_scene_panel import MasterScenePanel
+from .mixer_panel import MixerPanel
+from .now_playing_panel import NowPlayingPanel
+from .plex_jellyfin_panel import PlexJellyfinPanel
+from .scheduler_panel import SchedulerPanel
+from .soundboard_panel import SoundboardPanel
+from .spotify_panel import SpotifyPanel
+from .syrinscape_panel import SyrinscapePanel
+from .tidal_panel import TidalPanel
 from .vault_notes_panel import VaultNotesPanel
-from .console_panel     import ConsolePanel
-from .soundboard_panel  import SoundboardPanel
-from .discord_panel     import DiscordPanel
-from .spotify_panel     import SpotifyPanel
-from .fgu_panel         import FGUPanel
+from .visualiser_panel import VisualiserPanel
+from .youtube_panel import YouTubePanel
 
 __all__ = [
-    "VaultNotesPanel",
+    "BrowserPanel",
+    "ChatPanel",
     "ConsolePanel",
-    "SoundboardPanel",
     "DiscordPanel",
-    "SpotifyPanel",
+    "EqualizerPanel",
     "FGUPanel",
+    "LocalMusicPanel",
+    "MasterScenePanel",
+    "MixerPanel",
+    "NowPlayingPanel",
+    "PlexJellyfinPanel",
+    "SchedulerPanel",
+    "SoundboardPanel",
+    "SpotifyPanel",
+    "SyrinscapePanel",
+    "TidalPanel",
+    "VaultNotesPanel",
+    "VisualiserPanel",
+    "YouTubePanel",
 ]

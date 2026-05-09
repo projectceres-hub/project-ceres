@@ -289,6 +289,7 @@ class MainWindow(QMainWindow):
                 "local_music": self._local_music_panel,
                 "plex_jellyfin": self._plex_jellyfin_panel,
             },
+            self._config,
             self,
         )
         self._master_scene_panel.status_message.connect(self._set_status)

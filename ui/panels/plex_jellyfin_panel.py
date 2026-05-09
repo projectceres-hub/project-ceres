@@ -66,6 +66,7 @@ from ui.theme import (
     ACCENT, ACCENT2, BG, BORDER, ERROR, MUTED,
     PANEL, SUCCESS, SURFACE, TEXT, WARNING,
 )
+from pantheon.vervactor.workspace import load_scene_data, save_scene_data
 
 # ── Optional dependencies ──────────────────────────────────────────────────────
 
@@ -1270,9 +1271,8 @@ class PlexJellyfinPanel(QDockWidget):
 
     def _load_scenes(self) -> List[Dict]:
         try:
-            with _SCENE_CONFIG_PATH.open("r", encoding="utf-8") as fh:
-                scenes = json.load(fh)
-            if len(scenes) >= len(SCENE_TAGS):
+            scenes = load_scene_data(self._config, "plex_jellyfin", _SCENE_CONFIG_PATH, [])
+            if isinstance(scenes, list) and len(scenes) >= len(SCENE_TAGS):
                 return scenes[: len(SCENE_TAGS)]
         except (FileNotFoundError, json.JSONDecodeError, TypeError):
             pass
@@ -1280,8 +1280,7 @@ class PlexJellyfinPanel(QDockWidget):
 
     def _save_scenes(self) -> None:
         try:
-            with _SCENE_CONFIG_PATH.open("w", encoding="utf-8") as fh:
-                json.dump(self._scenes, fh, indent=2)
+            save_scene_data(self._config, "plex_jellyfin", _SCENE_CONFIG_PATH, self._scenes)
         except Exception:
             pass
 

@@ -58,6 +58,11 @@ except ImportError:
     from PySide6.QtGui import QPixmap  # type: ignore
 
 from ui.theme import ACCENT, BORDER, MUTED, SURFACE, TEXT
+from pantheon.vervactor.workspace import (
+    AudioSourceAdapter,
+    AudioSourceState,
+    PanelAudioSourceAdapter,
+)
 
 _ASSETS = Path(__file__).resolve().parent.parent / "assets"
 _POLL_MS = 2_000  # refresh cadence
@@ -72,12 +77,12 @@ class _SourceRow:
     def __init__(
         self,
         name: str,
-        panel: object,
+        adapter: AudioSourceAdapter,
         icon_file: str,
         parent_widget: QWidget,
     ) -> None:
         self.name = name
-        self.panel = panel
+        self.adapter = adapter
 
         # ── Build row frame ──────────────────────────────────────────────────
         self.frame = QFrame(parent_widget)
@@ -173,11 +178,8 @@ class _SourceRow:
         self._last_paused = False
 
     def _cmd(self, action: str, query: str) -> None:
-        """Forward a command to the source panel via handle_command."""
-        if not hasattr(self.panel, "handle_command"):
-            return
+        """Forward a command to the source adapter."""
         a = action.lower().strip()
-        q = query
         name = self.name
 
         if name == "Spotify":
@@ -207,7 +209,16 @@ class _SourceRow:
                 return
 
         try:
-            self.panel.handle_command(a, q)  # type: ignore[attr-defined]
+            if a in ("play", "resume"):
+                self.adapter.play()
+            elif a == "pause":
+                self.adapter.pause()
+            elif a == "stop":
+                self.adapter.stop()
+            elif a in ("next", "skip"):
+                self.adapter.next()
+            elif a == "previous":
+                self.adapter.previous()
         except Exception:
             pass
 
@@ -219,13 +230,13 @@ class _SourceRow:
         else:
             self._cmd("resume", "")
 
-    def update(self, state: dict) -> None:
-        """Refresh all widgets from a get_np_state() dict."""
-        playing = bool(state.get("playing", False))
-        paused = bool(state.get("paused", False))
-        title = str(state.get("title", ""))
-        subtitle = str(state.get("subtitle", ""))
-        pct = int(state.get("progress_pct", -1))
+    def update(self, state: AudioSourceState) -> None:
+        """Refresh all widgets from an AudioSourceState."""
+        playing = state.playing
+        paused = state.paused
+        title = state.title
+        subtitle = state.subtitle
+        pct = state.progress_pct
 
         self._last_playing = playing
         self._last_paused = paused
@@ -255,10 +266,10 @@ class _SourceRow:
             self.btn_play.setText("▐▐")
 
         # Enable / disable controls
-        can_pause = bool(state.get("can_pause", False))
-        can_next = bool(state.get("can_next", False))
-        can_prev = bool(state.get("can_prev", False))
-        can_stop = bool(state.get("can_stop", False))
+        can_pause = state.can_pause
+        can_next = state.can_next
+        can_prev = state.can_prev
+        can_stop = state.can_stop
         active = playing or paused
 
         self.btn_play.setEnabled(can_pause and active)
@@ -351,29 +362,32 @@ class NowPlayingPanel(QDockWidget):
         The panel must implement get_np_state() -> dict and handle_command(action, query).
         Call this from MainWindow after all source panels are constructed.
         """
-        row = _SourceRow(name, panel, icon_file, self._rows_widget)
+        adapter = (
+            panel
+            if isinstance(panel, AudioSourceAdapter)
+            else PanelAudioSourceAdapter(name.lower().replace(" ", "_"), name, panel)
+        )
+        row = _SourceRow(name, adapter, icon_file, self._rows_widget)
         # Insert before the trailing stretch
         idx = self._rows_layout.count() - 1
         self._rows_layout.insertWidget(idx, row.frame)
         self._sources.append(row)
 
         # Immediate first paint
-        if hasattr(panel, "get_np_state"):
-            try:
-                row.update(panel.get_np_state())  # type: ignore[attr-defined]
-            except Exception:
-                pass
+        try:
+            row.update(adapter.get_state())
+        except Exception:
+            pass
 
     # ── Polling ───────────────────────────────────────────────────────────────
 
     def _poll(self) -> None:
         """Called every _POLL_MS ms; refreshes all source rows."""
         for src in self._sources:
-            if hasattr(src.panel, "get_np_state"):
-                try:
-                    src.update(src.panel.get_np_state())  # type: ignore[attr-defined]
-                except Exception:
-                    pass
+            try:
+                src.update(src.adapter.get_state())
+            except Exception:
+                pass
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
         """Stop polling before the dock widget is destroyed."""

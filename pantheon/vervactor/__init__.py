@@ -19,6 +19,19 @@ from .campaigns import (
     find_campaign,
     create_session,
 )
+from .workspace import (
+    AudioSourceAdapter,
+    AudioSourceState,
+    PanelAudioSourceAdapter,
+    WorkspaceObjectRef,
+    WorkspaceState,
+    load_scene_data,
+    load_workspace_state,
+    save_scene_data,
+    save_workspace_state,
+    set_current_object,
+    workspace_dir,
+)
 
 __all__ = [
     "Campaign",
@@ -30,5 +43,16 @@ __all__ = [
     "create_location",
     "find_campaign",
     "create_session",
+    "AudioSourceAdapter",
+    "AudioSourceState",
+    "PanelAudioSourceAdapter",
+    "WorkspaceObjectRef",
+    "WorkspaceState",
+    "load_scene_data",
+    "load_workspace_state",
+    "save_scene_data",
+    "save_workspace_state",
+    "set_current_object",
+    "workspace_dir",
 ]
 

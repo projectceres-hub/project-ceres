@@ -61,6 +61,7 @@ from ui.theme import (
     ACCENT, ACCENT2, BG, BORDER, ERROR, MUTED,
     PANEL, SUCCESS, SURFACE, TEXT, WARNING,
 )
+from pantheon.vervactor.workspace import load_scene_data, save_scene_data
 
 # ── Optional dependency ────────────────────────────────────────────────────────
 
@@ -377,8 +378,8 @@ class SyrinscapePanel(QDockWidget):
 
     def _load_scene_config(self) -> None:
         try:
-            if SCENE_CONFIG_PATH.exists():
-                data = json.loads(SCENE_CONFIG_PATH.read_text(encoding="utf-8"))
+            data = load_scene_data(self._config, "syrinscape", SCENE_CONFIG_PATH, {})
+            if isinstance(data, dict):
                 for _, key in SCENE_SLOTS:
                     if key in data:
                         self._scene_config[key] = data[key]
@@ -387,10 +388,7 @@ class SyrinscapePanel(QDockWidget):
 
     def _save_scene_config(self) -> None:
         try:
-            SCENE_CONFIG_PATH.write_text(
-                json.dumps(self._scene_config, indent=2, ensure_ascii=False),
-                encoding="utf-8",
-            )
+            save_scene_data(self._config, "syrinscape", SCENE_CONFIG_PATH, self._scene_config)
         except Exception:
             pass
 
