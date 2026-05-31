@@ -18,17 +18,17 @@ from typing import Callable, Optional
 
 try:
     from PyQt5.QtWidgets import (
-        QMainWindow, QWidget, QLabel, QStatusBar, QMenuBar,
+        QApplication, QMainWindow, QWidget, QLabel, QStatusBar, QMenuBar,
         QAction, QSizePolicy, QDockWidget, QMessageBox, QTabBar,
     )
-    from PyQt5.QtCore import Qt, QSize, QSettings
+    from PyQt5.QtCore import Qt, QSize, QSettings, QRect
     from PyQt5.QtGui import QFont, QIcon, QPalette, QColor
 except ImportError:
     from PySide6.QtWidgets import (  # type: ignore
-        QMainWindow, QWidget, QLabel, QStatusBar, QMenuBar,
+        QApplication, QMainWindow, QWidget, QLabel, QStatusBar, QMenuBar,
         QAction, QSizePolicy, QDockWidget, QMessageBox, QTabBar,
     )
-    from PySide6.QtCore import Qt, QSize, QSettings  # type: ignore
+    from PySide6.QtCore import Qt, QSize, QSettings, QRect  # type: ignore
     from PySide6.QtGui import QFont, QIcon, QPalette, QColor  # type: ignore
 
 from ui.theme import (
@@ -57,6 +57,20 @@ from ui.dialogs.preferences_dialog import PreferencesDialog
 from core.vaults import get_obsidian_json_path, sync_obsidian_vaults
 
 _ASSETS = Path(__file__).resolve().parent / "assets"
+
+
+def _rect_intersects_any_screen(rect: QRect, screen_rects) -> bool:
+    """Return True when a restored window rect is visible on any screen."""
+    if rect.isNull() or rect.isEmpty():
+        return False
+    return any(rect.intersects(screen_rect) for screen_rect in screen_rects)
+
+
+def _available_screen_rects():
+    app = QApplication.instance()
+    if app is None:
+        return []
+    return [screen.availableGeometry() for screen in app.screens()]
 
 
 class MainWindow(QMainWindow):
@@ -592,9 +606,13 @@ class MainWindow(QMainWindow):
         settings = QSettings("ProjectCeres", "GMAssistant")
         geo = settings.value("geometry")
         state = settings.value("windowState")
+        restored_geometry = False
         if geo:
             self.restoreGeometry(geo)
-        if state:
+            restored_geometry = self._restored_geometry_is_visible()
+            if not restored_geometry:
+                self._reset_to_default_geometry()
+        if state and restored_geometry:
             self.restoreState(state)
 
     def _save_geometry(self) -> None:
@@ -602,6 +620,32 @@ class MainWindow(QMainWindow):
         settings = QSettings("ProjectCeres", "GMAssistant")
         settings.setValue("geometry", self.saveGeometry())
         settings.setValue("windowState", self.saveState())
+
+    def _restored_geometry_is_visible(self) -> bool:
+        """Check whether restored geometry leaves the window on a real screen."""
+        screen_rects = _available_screen_rects()
+        if not screen_rects:
+            return True
+        if self.isMinimized():
+            return False
+        return _rect_intersects_any_screen(self.geometry(), screen_rects)
+
+    def _reset_to_default_geometry(self) -> None:
+        """Place the main window at a visible default size on the primary screen."""
+        self.setWindowState(self.windowState() & ~Qt.WindowState.WindowMinimized)
+        self.resize(QSize(1400, 860))
+        app = QApplication.instance()
+        if app is None:
+            self.move(80, 80)
+            return
+        screen = app.primaryScreen() or (app.screens()[0] if app.screens() else None)
+        if screen is None:
+            self.move(80, 80)
+            return
+        available = screen.availableGeometry()
+        x = available.x() + max(0, (available.width() - self.width()) // 2)
+        y = available.y() + max(0, (available.height() - self.height()) // 2)
+        self.move(x, y)
 
     # ── Help / About ────────────────────────────────────────────────────────────
 

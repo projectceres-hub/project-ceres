@@ -29,14 +29,42 @@ from __future__ import annotations
 
 import sys
 import os
+import subprocess
+import traceback
 from datetime import datetime
 from pathlib import Path
+
+_PROJECT_ROOT = Path(__file__).resolve().parent
+_PROJECT_VENV_PYTHON = _PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"
+
+
+def _maybe_reexec_project_venv() -> None:
+    """Use the project venv when launched through a different Python."""
+    if os.environ.get("CERES_UI_SKIP_VENV_REEXEC") == "1":
+        return
+    if not _PROJECT_VENV_PYTHON.exists():
+        return
+    current_python = Path(sys.executable).resolve()
+    target_python = _PROJECT_VENV_PYTHON.resolve()
+    if current_python == target_python:
+        return
+
+    sys.stderr.write(f"GM Assistant switching to project venv: {target_python}\n")
+    sys.stderr.flush()
+    os.environ["CERES_UI_SKIP_VENV_REEXEC"] = "1"
+    code = subprocess.call(
+        [str(target_python), str(Path(__file__).resolve()), *sys.argv[1:]]
+    )
+    raise SystemExit(code)
+
+
+_maybe_reexec_project_venv()
 
 # ── Redirect all stdout/stderr to logs/ui.log ────────────────────────────────
 # Creates a fresh log on every launch so the terminal stays clean.
 # Chromium console noise, Qt warnings, pygame banners — everything lands here.
 
-_LOG_DIR = Path(__file__).resolve().parent / "logs"
+_LOG_DIR = _PROJECT_ROOT / "logs"
 _LOG_DIR.mkdir(exist_ok=True)
 _LOG_FILE = _LOG_DIR / "ui.log"
 
@@ -56,6 +84,40 @@ sys.stderr = _log_handle
 os.dup2(_log_handle.fileno(), 1)  # fd 1 = stdout
 os.dup2(_log_handle.fileno(), 2)  # fd 2 = stderr
 
+
+def _terminal_message(message: str) -> None:
+    _original_stderr.write(message)
+    _original_stderr.flush()
+
+
+def _log_checkpoint(message: str) -> None:
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    _log_handle.write(f"[startup {timestamp}] {message}\n")
+    _log_handle.flush()
+
+
+def _format_rect(rect) -> str:
+    return f"x={rect.x()} y={rect.y()} w={rect.width()} h={rect.height()}"
+
+
+def _describe_screens(app: QApplication) -> str:
+    parts = []
+    for screen in app.screens():
+        parts.append(
+            f"{screen.name()} available=({_format_rect(screen.availableGeometry())})"
+        )
+    return "; ".join(parts) if parts else "<no screens>"
+
+
+def _describe_window(window, app: QApplication) -> str:
+    return (
+        f"visible={window.isVisible()} "
+        f"minimized={window.isMinimized()} "
+        f"active={window.isActiveWindow()} "
+        f"geometry=({_format_rect(window.geometry())}) "
+        f"screens={_describe_screens(app)}"
+    )
+
 # ── Ensure project root is importable ─────────────────────────────────────────
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
@@ -67,8 +129,10 @@ def _require_qt() -> str:
     for binding in ("PyQt5", "PySide6"):
         try:
             __import__(binding)
+            _log_checkpoint(f"qt binding selected: {binding}")
             return binding
         except ImportError:
+            _log_checkpoint(f"qt binding unavailable: {binding}")
             continue
     _original_stderr.write(
         "\n[GM Assistant] Could not find PyQt5 or PySide6.\n"
@@ -105,6 +169,7 @@ from ui.theme import FONT_SIZE
 
 def _make_app() -> QApplication:
     """Create and configure the QApplication."""
+    _log_checkpoint("creating QApplication")
     # High-DPI attributes must be set BEFORE QApplication is constructed
     try:
         QApplication.setAttribute(Qt.ApplicationAttribute.AA_EnableHighDpiScaling, True)  # type: ignore[attr-defined]
@@ -113,6 +178,7 @@ def _make_app() -> QApplication:
         pass  # PySide6 / newer Qt handles this automatically
 
     app = QApplication.instance() or QApplication(sys.argv)
+    _log_checkpoint(f"QApplication ready; screens={_describe_screens(app)}")
 
     # Global font
     font = QFont("Consolas")
@@ -128,7 +194,7 @@ def _make_app() -> QApplication:
     return app
 
 
-def main() -> int:
+def _main_without_diagnostics() -> int:
     _original_stderr.write(
         f"GM Assistant started — logs at {_LOG_FILE}\n"
     )
@@ -151,6 +217,52 @@ def main() -> int:
     window.show()
 
     return app.exec() if hasattr(app, "exec") else app.exec_()  # type: ignore[attr-defined]
+
+
+def _main_with_diagnostics() -> int:
+    _terminal_message(f"GM Assistant starting - logs at {_LOG_FILE}\n")
+    _log_checkpoint("main entered")
+
+    try:
+        app = _make_app()
+
+        _log_checkpoint("initializing backend")
+        config, gpt_client, scheduler, scheduler_context, history_manager = (
+            initialize_application()
+        )
+        _log_checkpoint("backend initialized")
+
+        # Swap CLI input provider -> Qt dialog input provider.
+        config.input_provider = qt_input_provider
+
+        _log_checkpoint("registering commands")
+        register_all_commands(config, gpt_client, scheduler, scheduler_context, history_manager)
+        _log_checkpoint(f"commands registered: {len(config.commands)}")
+
+        _log_checkpoint("constructing MainWindow")
+        window = MainWindow(config, run_command)
+        _log_checkpoint(f"MainWindow constructed; {_describe_window(window, app)}")
+
+        window.show()
+        window.raise_()
+        window.activateWindow()
+        _log_checkpoint(f"window shown; {_describe_window(window, app)}")
+        _terminal_message(f"GM Assistant window shown - logs at {_LOG_FILE}\n")
+
+        _log_checkpoint("event loop entered")
+        return app.exec() if hasattr(app, "exec") else app.exec_()  # type: ignore[attr-defined]
+    except Exception:
+        details = traceback.format_exc()
+        _log_checkpoint("fatal startup exception")
+        _log_handle.write(details)
+        _log_handle.flush()
+        _terminal_message(
+            f"\n[GM Assistant] Startup failed. See {_LOG_FILE}\n{details}\n"
+        )
+        return 1
+
+
+main = _main_with_diagnostics
 
 
 if __name__ == "__main__":

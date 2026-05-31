@@ -10,7 +10,7 @@ This document is for **coding agents**: it describes the **current** repository 
 
 | Entry | File | Role |
 |-------|------|------|
-| GUI | `ui_main.py` | Launches Qt; redirects stdout/stderr to `logs/ui.log`; ensures project root on `sys.path`; calls backend init from `assistant.py`; sets `config.input_provider` to `qt_input_provider` (`ui/input_bridge.py`); registers commands; opens `MainWindow`. |
+| GUI | `ui_main.py` | Launches Qt; redirects stdout/stderr to `logs/ui.log`; re-enters `.venv` when `python ui_main.py` is launched with another interpreter; ensures project root on `sys.path`; calls backend init from `assistant.py`; sets `config.input_provider` to `qt_input_provider` (`ui/input_bridge.py`); registers commands; opens `MainWindow`. See `docs/gui_launch.md`. |
 | CLI | `assistant.py` | Terminal REPL (`prompt_toolkit`); same `initialize_application()`, `register_all_commands()`, `run_command()`; uses terminal-friendly `input_provider` unless overridden. |
 
 Shared backend (both entry points):
@@ -387,7 +387,7 @@ Summary only. **Known:** full structures and validation live in the **producer/c
 | Pantheon / backend | `python -c "from pantheon.<domain> import …"` from project root |
 | `assistant.py` / registry | Run CLI `help` or inspect `config.commands` after init |
 | `Config` persistence | Confirm new field in `load_settings`/`save_settings` and **no secrets** written |
-| GUI / panel | `python ui_main.py`; tail `logs/ui.log` for tracebacks |
+| GUI / panel | `python ui_main.py`; tail `logs/ui.log` for startup checkpoints, geometry state, and tracebacks |
 | Scheduler | `schedule-status` or `schedule-run-once` / relevant `*-run-now` |
 | Voice inbox | Drop a tiny valid JSON in `inbox/voice_commands/`, run `voice-commands-process` (use `--dry-run` if supported) |
 
@@ -402,7 +402,7 @@ Summary only. **Known:** full structures and validation live in the **producer/c
 | **`core/errors.py`** | `install_error_handler()` sets `sys.excepthook`, `threading.excepthook`, optional `unraisablehook` → **logs full trace** to `logs/errors.log` for unhandled exceptions; **KeyboardInterrupt** is not logged as crash. |
 | **CLI entry** | `assistant.guarded_main` wraps `main()` so crashes are logged (see `errors.py`). |
 | **GUI** | Panels emit **`status_message`** to `MainWindow` for transient errors; **QMessageBox** for About/Help; **no** automatic `errors.log` for caught slot exceptions — **catch in slots**, emit status or log. |
-| **GUI stdout/stderr** | `ui_main.py` redirects stdio to **`logs/ui.log`** — prints from libraries may land there, not the terminal. |
+| **GUI stdout/stderr** | `ui_main.py` prints startup/failure status to the real terminal, then redirects stdio to **`logs/ui.log`** — prints from libraries may land there, not the terminal. |
 | **Background workers** | Use **signals** for errors (`error` / `result_ready` pattern); never touch widgets from worker threads. |
 | **Consistency** | Long-running CLI commands print progress; GUI should not rely on stdout — use signals or status bar. |
 
