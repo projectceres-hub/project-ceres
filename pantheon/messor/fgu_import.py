@@ -24,14 +24,14 @@ import html
 import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, TYPE_CHECKING
 
 import yaml
 
 if TYPE_CHECKING:
     from core.config import Config
 
-from pantheon.insitor.note_creator import NoteSpec, create_note
+from pantheon.insitor.note_creator import NoteSpec, create_note, safe_filename
 
 # ---------------------------------------------------------------------------
 # Ruleset detection
@@ -904,8 +904,9 @@ class FGUEntityParser:
 def import_campaign_entities(
     campaign_path: Path,
     config: "Config",
-    entity_types: Tuple[str, ...] = ("npc", "pc", "item"),
+    entity_types: Sequence[str] = ("npc", "pc", "item"),
     overwrite: bool = False,
+    progress_callback: Optional[Callable[[int, int, str], None]] = None,
 ) -> Tuple[int, List[str]]:
     """Import FGU campaign entities as Obsidian notes.
 
@@ -917,8 +918,9 @@ def import_campaign_entities(
         config: Application config (must have ``current_vault`` set).
         entity_types: Which entity types to import.
         overwrite: If ``True``, overwrite existing notes; if ``False``,
-            collisions are skipped silently (``create_note`` resolves unique
-            paths internally).
+            existing notes are preserved and reported as skipped.
+        progress_callback: Optional callback receiving
+            ``(current, total, title)`` after each NoteSpec is handled.
 
     Returns:
         ``(created_count, error_messages)`` tuple.
@@ -927,16 +929,36 @@ def import_campaign_entities(
     if not parser.load():
         return 0, [f"Could not load campaign at {campaign_path}"]
 
-    specs = parser.parse(entity_types)
+    specs = parser.parse(tuple(entity_types))
     created = 0
     errors: List[str] = []
+    total = len(specs)
 
-    for spec in specs:
+    if not getattr(config, "current_vault", None):
+        return 0, ["No current vault set"]
+    vaults = getattr(config, "vaults", {}) or {}
+    if config.current_vault not in vaults:
+        return 0, [f"Current vault '{config.current_vault}' not found in vaults"]
+
+    vault_path = Path(vaults[config.current_vault])
+
+    for index, spec in enumerate(specs, 1):
         try:
+            dest_dir = vault_path / spec.folder if spec.folder else vault_path
+            dest_path = dest_dir / f"{safe_filename(spec.title)}.md"
+            if dest_path.exists() and not overwrite:
+                errors.append(f"Skipped existing note: {dest_path}")
+                continue
             result = create_note(spec, config)
             if result is not None:
                 created += 1
         except Exception as exc:
             errors.append(f"{spec.title}: {exc}")
+        finally:
+            if progress_callback is not None:
+                try:
+                    progress_callback(index, total, spec.title)
+                except Exception:
+                    pass
 
     return created, errors

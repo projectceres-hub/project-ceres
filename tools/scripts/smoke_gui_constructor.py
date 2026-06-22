@@ -59,6 +59,22 @@ def main() -> int:
     )
     window = MainWindow(config, run_command)
 
+    menu_titles = [action.text().replace("&", "") for action in window.menuBar().actions()]
+    expected_order = ["File", "Tools", "View", "Modules", "Help"]
+    if menu_titles[:5] != expected_order:
+        raise AssertionError(f"Unexpected menu order: {menu_titles[:5]}")
+
+    tools_menu = next(
+        (action.menu() for action in window.menuBar().actions() if action.text().replace("&", "") == "Tools"),
+        None,
+    )
+    if tools_menu is None:
+        raise AssertionError("Tools menu missing")
+
+    tool_actions = [action.text().replace("&", "") for action in tools_menu.actions()]
+    if "PDF Importer..." not in tool_actions:
+        raise AssertionError(f"PDF Importer action missing from Tools menu: {tool_actions}")
+
     print("GUI constructor smoke OK.")
     print(f"Registered commands: {len(config.commands)}")
     print(f"Window title: {window.windowTitle()}")

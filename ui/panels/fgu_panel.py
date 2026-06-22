@@ -29,25 +29,27 @@ Layout
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable, Dict, Optional, Union
+from typing import Callable, Dict, List, Optional, Tuple, Union
 
 try:
     from PyQt5.QtWidgets import (
         QDockWidget, QWidget, QVBoxLayout, QHBoxLayout,
         QPushButton, QLabel, QComboBox, QTreeWidget, QTreeWidgetItem,
         QTabWidget, QLineEdit, QFileDialog, QSizePolicy, QCheckBox,
-        QMessageBox, QTextEdit, QSplitter, QApplication,
+        QMessageBox, QTextEdit, QSplitter, QApplication, QProgressBar,
+        QListWidget, QListWidgetItem, QAbstractItemView,
     )
-    from PyQt5.QtCore import Qt, QTimer, QSettings, pyqtSignal as Signal
+    from PyQt5.QtCore import Qt, QTimer, QSettings, QThread, pyqtSignal as Signal
     from PyQt5.QtGui import QColor, QFont
 except ImportError:
     from PySide6.QtWidgets import (  # type: ignore
         QDockWidget, QWidget, QVBoxLayout, QHBoxLayout,
         QPushButton, QLabel, QComboBox, QTreeWidget, QTreeWidgetItem,
         QTabWidget, QLineEdit, QFileDialog, QSizePolicy, QCheckBox,
-        QMessageBox, QTextEdit, QSplitter, QApplication,
+        QMessageBox, QTextEdit, QSplitter, QApplication, QProgressBar,
+        QListWidget, QListWidgetItem, QAbstractItemView,
     )
-    from PySide6.QtCore import Qt, QTimer, QSettings, Signal  # type: ignore
+    from PySide6.QtCore import Qt, QTimer, QSettings, QThread, Signal  # type: ignore
     from PySide6.QtGui import QColor, QFont  # type: ignore
 
 from ui.theme import ACCENT, MUTED, TEXT, SUCCESS, WARNING, ERROR, PANEL, SURFACE
@@ -61,6 +63,7 @@ from pantheon.messor.fgu_character import (
     character_to_markdown, npc_to_markdown, item_to_markdown,
 )
 from pantheon.messor import (
+    detect_ruleset,
     import_campaign_entities,
     export_entities_to_xml,
     read_fgu_notes_in_vault,
@@ -79,6 +82,84 @@ COL_NAME   = 0
 COL_DETAIL = 1
 COL_HP     = 2
 COL_AC     = 3
+
+
+class _ImportWorker(QThread):
+    """Background worker for system-aware FGU entity imports."""
+
+    progress: Signal = Signal(int, int, str)
+    finished_import: Signal = Signal(int, list)
+
+    def __init__(
+        self,
+        campaign_path: Path,
+        config,
+        entity_types: Tuple[str, ...],
+        overwrite: bool,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent)
+        self._campaign_path = campaign_path
+        self._config = config
+        self._entity_types = entity_types
+        self._overwrite = overwrite
+
+    def run(self) -> None:
+        def _progress(current: int, total: int, label: str) -> None:
+            self.progress.emit(current, total, label)
+
+        try:
+            count, errors = import_campaign_entities(
+                self._campaign_path,
+                self._config,
+                entity_types=self._entity_types,
+                overwrite=self._overwrite,
+                progress_callback=_progress,
+            )
+            self.finished_import.emit(count, errors)
+        except Exception as exc:
+            self.finished_import.emit(0, [str(exc)])
+
+
+class _ExportWorker(QThread):
+    """Background worker for scanning and exporting FGU notes."""
+
+    scan_done: Signal = Signal(list)
+    export_done: Signal = Signal(int, list)
+
+    def __init__(
+        self,
+        mode: str,
+        vault_path: Optional[Path] = None,
+        note_paths: Optional[List[Path]] = None,
+        output_path: Optional[Path] = None,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent)
+        self._mode = mode
+        self._vault_path = vault_path
+        self._note_paths = note_paths or []
+        self._output_path = output_path
+
+    def run(self) -> None:
+        if self._mode == "scan":
+            try:
+                self.scan_done.emit(read_fgu_notes_in_vault(self._vault_path or Path()))
+            except Exception:
+                self.scan_done.emit([])
+            return
+
+        if self._mode == "export":
+            try:
+                if self._output_path is None:
+                    raise ValueError("No export output path set")
+                count, errors = export_entities_to_xml(
+                    self._note_paths,
+                    self._output_path,
+                )
+                self.export_done.emit(count, errors)
+            except Exception as exc:
+                self.export_done.emit(0, [str(exc)])
 
 
 class FGUPanel(QDockWidget):
@@ -111,6 +192,11 @@ class FGUPanel(QDockWidget):
         self._parser: Optional[FGUCampaignParser] = None
         self._campaigns: Dict[str, Path] = {}
         self._export_path: str = ""
+        self._import_worker: Optional[_ImportWorker] = None
+        self._export_worker: Optional[_ExportWorker] = None
+        self._export_note_data: List[Tuple[Path, Dict[str, object]]] = []
+        self._active_import_campaign: Optional[Path] = None
+        self._active_export_path: Optional[Path] = None
 
         self._settings = QSettings("ProjectCeres", "GMAssistant")
 
@@ -238,12 +324,12 @@ class FGUPanel(QDockWidget):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
 
-        description = QLabel(
-            "Import all entities from the selected campaign into your active "
-            "Obsidian vault as structured notes."
-        )
-        description.setWordWrap(True)
-        layout.addWidget(description)
+        ruleset_row = QHBoxLayout()
+        ruleset_row.addWidget(QLabel("Ruleset:"))
+        self._ruleset_lbl = QLabel("Load a campaign first")
+        self._ruleset_lbl.setStyleSheet(f"color: {ACCENT}; font-weight: bold;")
+        ruleset_row.addWidget(self._ruleset_lbl, 1)
+        layout.addLayout(ruleset_row)
 
         checks_row = QHBoxLayout()
         checks_row.setSpacing(10)
@@ -260,21 +346,37 @@ class FGUPanel(QDockWidget):
             self._import_notes_cb,
         ):
             checkbox.setChecked(True)
+            checkbox.setStyleSheet(f"color: {TEXT};")
             checks_row.addWidget(checkbox)
         checks_row.addStretch(1)
         layout.addLayout(checks_row)
 
-        self._import_tab_button = QPushButton("Import")
+        self._overwrite_cb = QCheckBox("Overwrite existing notes")
+        self._overwrite_cb.setStyleSheet(f"color: {TEXT};")
+        layout.addWidget(self._overwrite_cb)
+
+        self._import_tab_button = QPushButton("Import Campaign")
         self._import_tab_button.setStyleSheet(
             f"background: {SUCCESS}; color: white; font-weight: bold;"
         )
         self._import_tab_button.clicked.connect(self._on_import_clicked)
         layout.addWidget(self._import_tab_button)
 
+        self._import_progress = QProgressBar()
+        self._import_progress.setRange(0, 100)
+        self._import_progress.setValue(0)
+        self._import_progress.setVisible(False)
+        self._import_progress.setStyleSheet(
+            f"QProgressBar {{ background: {SURFACE}; color: {TEXT}; "
+            f"border: 1px solid {MUTED}; border-radius: 3px; }}"
+        )
+        layout.addWidget(self._import_progress)
+
         self._import_log = QTextEdit()
         self._import_log.setReadOnly(True)
         self._import_log.setStyleSheet(
-            f"background: {PANEL}; color: {TEXT}; font-family: Consolas, monospace;"
+            f"background: {PANEL}; color: {TEXT}; "
+            "font-family: Consolas, monospace; font-size: 11px;"
         )
         layout.addWidget(self._import_log, 1)
         return tab
@@ -286,37 +388,42 @@ class FGUPanel(QDockWidget):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
 
-        description = QLabel(
-            "Export Obsidian notes tagged fgu_entity: true back to a "
-            "Fantasy Grounds-compatible XML file."
+        scan_row = QHBoxLayout()
+        self._export_scan_btn = QPushButton("Scan Vault for FGU Notes")
+        self._export_scan_btn.clicked.connect(self._start_export_scan)
+        scan_row.addWidget(self._export_scan_btn)
+        self._export_scan_lbl = QLabel("")
+        self._export_scan_lbl.setStyleSheet(f"color: {MUTED};")
+        scan_row.addWidget(self._export_scan_lbl, 1)
+        layout.addLayout(scan_row)
+
+        self._export_list = QListWidget()
+        self._export_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)  # type: ignore[attr-defined]
+        self._export_list.setMinimumHeight(180)
+        self._export_list.setStyleSheet(
+            f"background: {SURFACE}; color: {TEXT}; border: 1px solid {MUTED};"
         )
-        description.setWordWrap(True)
-        layout.addWidget(description)
+        layout.addWidget(self._export_list, 1)
 
-        path_row = QHBoxLayout()
-        self._choose_export_btn = QPushButton("Choose Output File...")
-        self._choose_export_btn.clicked.connect(self._on_choose_export_file)
-        path_row.addWidget(self._choose_export_btn)
+        btn_row = QHBoxLayout()
+        self._export_sel_btn = QPushButton("Export Selected")
+        self._export_sel_btn.setEnabled(False)
+        self._export_sel_btn.clicked.connect(lambda: self._start_export(True))
+        btn_row.addWidget(self._export_sel_btn)
 
-        self._export_path_edit = QLineEdit()
-        self._export_path_edit.setReadOnly(True)
-        self._export_path_edit.setPlaceholderText("No output file selected")
-        path_row.addWidget(self._export_path_edit, 1)
-        layout.addLayout(path_row)
-
-        self._export_button = QPushButton("Export")
-        self._export_button.setStyleSheet(
-            f"background: {WARNING}; color: white; font-weight: bold;"
-        )
-        self._export_button.clicked.connect(self._on_export_clicked)
-        layout.addWidget(self._export_button)
+        self._export_all_btn = QPushButton("Export All")
+        self._export_all_btn.setEnabled(False)
+        self._export_all_btn.clicked.connect(lambda: self._start_export(False))
+        btn_row.addWidget(self._export_all_btn)
+        layout.addLayout(btn_row)
 
         self._export_log = QTextEdit()
         self._export_log.setReadOnly(True)
         self._export_log.setStyleSheet(
-            f"background: {PANEL}; color: {TEXT}; font-family: Consolas, monospace;"
+            f"background: {PANEL}; color: {TEXT}; "
+            "font-family: Consolas, monospace; font-size: 11px;"
         )
-        layout.addWidget(self._export_log, 1)
+        layout.addWidget(self._export_log)
         return tab
 
     def _on_choose_export_file(self) -> None:
@@ -330,10 +437,11 @@ class FGUPanel(QDockWidget):
         if not selected:
             return
         self._export_path = selected
-        self._export_path_edit.setText(selected)
+        if hasattr(self, "_export_path_edit"):
+            self._export_path_edit.setText(selected)
 
     def _on_import_clicked(self) -> None:
-        """Import selected entity types from the active campaign."""
+        """Start a background import for selected entity types."""
         campaign_data = self._campaign_combo.currentData()
         if not campaign_data:
             QMessageBox.warning(
@@ -364,104 +472,188 @@ class FGUPanel(QDockWidget):
             )
             return
 
+        if (
+            not self._config
+            or not self._config.current_vault
+            or self._config.current_vault not in (self._config.vaults or {})
+        ):
+            self._import_log.append("No active vault. Select one in Vault / Notes first.")
+            return
+
+        if self._import_worker is not None and self._import_worker.isRunning():
+            self._import_log.append("Import already running.")
+            return
+
+        campaign_path = Path(campaign_data)
+        self._active_import_campaign = campaign_path
         self._import_log.clear()
-        self._import_log.append("Starting import...")
-        QApplication.processEvents()
-        try:
-            imported_count, errors = import_campaign_entities(
-                Path(campaign_data),
-                self._config,
-                entity_types=entity_types,
-            )
-            for idx in range(1, imported_count + 1):
-                self._import_log.append(f"Imported entity {idx}")
-            for err in errors:
-                self._import_log.append(f"ERROR: {err}")
-            summary = f"Imported {imported_count} entities. Errors: {len(errors)}"
-            self._import_log.append(summary)
+        self._import_log.append(f"Starting import: {campaign_path.name}")
+        self._import_progress.setValue(0)
+        self._import_progress.setVisible(True)
+        self._import_tab_button.setEnabled(False)
+
+        self._import_worker = _ImportWorker(
+            campaign_path,
+            self._config,
+            entity_types,
+            self._overwrite_cb.isChecked(),
+            self,
+        )
+        self._import_worker.progress.connect(self._on_import_progress)
+        self._import_worker.finished_import.connect(self._on_import_finished)
+        self._import_worker.start()
+
+    def _on_import_progress(self, current: int, total: int, label: str) -> None:
+        """Update import progress UI from the worker thread."""
+        if total > 0:
+            self._import_progress.setValue(int((current / total) * 100))
+        self._import_log.append(f"[{current}/{total}] {label}")
+        sb = self._import_log.verticalScrollBar()
+        sb.setValue(sb.maximum())
+
+    def _on_import_finished(self, count: int, errors: list) -> None:
+        """Finish import UI state after the worker exits."""
+        self._import_progress.setValue(100)
+        self._import_tab_button.setEnabled(True)
+        self._import_log.append(f"Imported {count} note(s).")
+        if errors:
+            self._import_log.append(f"{len(errors)} warning/error(s):")
+            for err in errors[:20]:
+                self._import_log.append(f"  - {err}")
+
+        campaign_path = self._active_import_campaign
+        if campaign_path is not None:
             set_current_object(
                 self._config,
                 WorkspaceObjectRef(
                     kind="fgu_import",
-                    path=str(Path(campaign_data)),
-                    title=Path(campaign_data).name,
+                    path=str(campaign_path),
+                    title=campaign_path.name,
                     source="fgu_panel",
-                    metadata={"imported_count": imported_count, "errors": len(errors)},
+                    metadata={"imported_count": count, "errors": len(errors)},
                 ),
             )
-            if errors:
-                QMessageBox.warning(self, "Import Completed with Errors", summary)
-            else:
-                QMessageBox.information(self, "Import Completed", summary)
-        except Exception as exc:
-            self._import_log.append(f"ERROR: {exc}")
-            QMessageBox.warning(self, "Import Failed", str(exc))
+        self.status_message.emit(f"FGU import: {count} note(s), {len(errors)} issue(s)")
+        self._import_worker = None
 
     def _on_export_clicked(self) -> None:
-        """Export FGU-tagged vault notes to standalone XML."""
-        campaign_data = self._campaign_combo.currentData()
-        if not campaign_data:
-            QMessageBox.warning(
-                self,
-                "No Campaign Selected",
-                "Select a campaign before exporting.",
-            )
-            return
-        if not self._export_path:
-            QMessageBox.warning(
-                self,
-                "No Output File",
-                "Choose an output XML file before exporting.",
-            )
+        """Compatibility entrypoint: export every scanned note."""
+        self._start_export(selected_only=False)
+
+    def _start_export_scan(self) -> None:
+        """Scan the active vault for FGU-tagged notes."""
+        if (
+            not self._config
+            or not self._config.current_vault
+            or self._config.current_vault not in (self._config.vaults or {})
+        ):
+            self._export_log.append("No active vault. Select one in Vault / Notes first.")
             return
 
+        if self._export_worker is not None and self._export_worker.isRunning():
+            self._export_log.append("Export task already running.")
+            return
+
+        vault_path = Path(self._config.vaults[self._config.current_vault])
         self._export_log.clear()
-        self._export_log.append("Scanning vault for FGU notes...")
-        QApplication.processEvents()
+        self._export_log.append(f"Scanning: {vault_path}")
+        self._export_scan_lbl.setText("Scanning...")
+        self._export_scan_btn.setEnabled(False)
+        self._export_sel_btn.setEnabled(False)
+        self._export_all_btn.setEnabled(False)
+        self._export_list.clear()
 
-        try:
-            if (
-                not self._config
-                or not self._config.current_vault
-                or self._config.current_vault not in (self._config.vaults or {})
-            ):
-                QMessageBox.warning(
-                    self,
-                    "No Vault Selected",
-                    "Please select an Obsidian vault in the Vault / Notes panel first.",
-                )
-                return
-            vault_path = Path(self._config.vaults[self._config.current_vault])
-            notes_with_frontmatter = read_fgu_notes_in_vault(vault_path)
-            note_paths = [path for path, _fm in notes_with_frontmatter]
-            self._export_log.append(f"Found {len(note_paths)} FGU note(s).")
-            exported_count, errors = export_entities_to_xml(
-                note_paths,
-                Path(self._export_path),
+        self._export_worker = _ExportWorker("scan", vault_path=vault_path, parent=self)
+        self._export_worker.scan_done.connect(self._on_export_scan_done)
+        self._export_worker.start()
+
+    def _on_export_scan_done(self, results: list) -> None:
+        """Populate the export note list after a scan."""
+        self._export_note_data = results
+        self._export_list.clear()
+        for note_path, fm in results:
+            label = (
+                f"{fm.get('name', Path(note_path).stem)} "
+                f"[{fm.get('fgu_system', '?')} / {fm.get('fgu_record_class', '?')}]"
             )
-            for note_path in note_paths:
-                self._export_log.append(f"Included: {note_path.name}")
-            for err in errors:
-                self._export_log.append(f"ERROR: {err}")
-            summary = f"Exported {exported_count} entities. Errors: {len(errors)}"
-            self._export_log.append(summary)
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, str(note_path))  # type: ignore[attr-defined]
+            self._export_list.addItem(item)
+
+        count = len(results)
+        self._export_scan_lbl.setText(f"{count} note(s) found")
+        self._export_log.append(f"Found {count} FGU note(s).")
+        self._export_scan_btn.setEnabled(True)
+        self._export_sel_btn.setEnabled(count > 0)
+        self._export_all_btn.setEnabled(count > 0)
+        self._export_worker = None
+
+    def _start_export(self, selected_only: bool) -> None:
+        """Export selected or all scanned FGU notes."""
+        if selected_only:
+            selected_rows = {
+                self._export_list.row(item)
+                for item in self._export_list.selectedItems()
+            }
+            note_paths = [
+                path for index, (path, _fm) in enumerate(self._export_note_data)
+                if index in selected_rows
+            ]
+        else:
+            note_paths = [path for path, _fm in self._export_note_data]
+
+        if not note_paths:
+            self._export_log.append("Nothing to export. Scan and select notes first.")
+            return
+
+        output_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save FGU Export XML",
+            self._export_path or str(Path.home() / "fgu_export.xml"),
+            "XML files (*.xml);;All files (*)",
+        )
+        if not output_path:
+            return
+
+        self._export_path = output_path
+        self._active_export_path = Path(output_path)
+        self._export_log.clear()
+        self._export_log.append(f"Exporting {len(note_paths)} note(s) to {output_path}")
+        self._export_sel_btn.setEnabled(False)
+        self._export_all_btn.setEnabled(False)
+
+        self._export_worker = _ExportWorker(
+            "export",
+            note_paths=note_paths,
+            output_path=Path(output_path),
+            parent=self,
+        )
+        self._export_worker.export_done.connect(self._on_export_done)
+        self._export_worker.start()
+
+    def _on_export_done(self, count: int, errors: list) -> None:
+        """Finish export UI state after the worker exits."""
+        self._export_log.append(f"Exported {count} record(s).")
+        if errors:
+            self._export_log.append(f"{len(errors)} warning/error(s):")
+            for err in errors[:20]:
+                self._export_log.append(f"  - {err}")
+
+        self._export_sel_btn.setEnabled(bool(self._export_note_data))
+        self._export_all_btn.setEnabled(bool(self._export_note_data))
+        if self._active_export_path is not None:
             set_current_object(
                 self._config,
                 WorkspaceObjectRef(
                     kind="fgu_export",
-                    path=str(Path(self._export_path)),
-                    title=Path(self._export_path).name,
+                    path=str(self._active_export_path),
+                    title=self._active_export_path.name,
                     source="fgu_panel",
-                    metadata={"exported_count": exported_count, "errors": len(errors)},
+                    metadata={"exported_count": count, "errors": len(errors)},
                 ),
             )
-            if errors:
-                QMessageBox.warning(self, "Export Completed with Errors", summary)
-            else:
-                QMessageBox.information(self, "Export Completed", summary)
-        except Exception as exc:
-            self._export_log.append(f"ERROR: {exc}")
-            QMessageBox.warning(self, "Export Failed", str(exc))
+        self.status_message.emit(f"FGU export: {count} record(s), {len(errors)} issue(s)")
+        self._export_worker = None
 
     # ── Campaign detection ─────────────────────────────────────────────────────
 
@@ -588,6 +780,8 @@ class FGUPanel(QDockWidget):
             f"{name}  ·  {n_chars} PC(s)  ·  {n_npcs} NPC(s)  ·  {n_items} item(s)"
         )
         self._db_status.setStyleSheet(f"color: {SUCCESS}; font-size: 10px;")
+        if hasattr(self, "_ruleset_lbl"):
+            self._ruleset_lbl.setText(detect_ruleset(campaign_path))
         self._settings.setValue("fgu/last_campaign", name)
         self.status_message.emit(f"FGU: {name} loaded")
 
@@ -825,6 +1019,14 @@ class FGUPanel(QDockWidget):
 
         dlg = _PreviewDialog(entity.name, md, self)
         dlg.exec() if hasattr(dlg, "exec") else dlg.exec_()  # type: ignore[attr-defined]
+
+    def closeEvent(self, event) -> None:
+        """Stop background workers before the panel closes."""
+        for worker in (self._import_worker, self._export_worker):
+            if worker is not None and worker.isRunning():
+                worker.quit()
+                worker.wait(2000)
+        super().closeEvent(event)
 
 
 # ── Preview dialog ─────────────────────────────────────────────────────────────

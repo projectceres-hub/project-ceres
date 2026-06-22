@@ -54,6 +54,7 @@ from ui.panels.plex_jellyfin_panel   import PlexJellyfinPanel
 from ui.panels.master_scene_panel    import MasterScenePanel
 from ui.panels.mixer_panel           import MixerPanel
 from ui.dialogs.preferences_dialog import PreferencesDialog
+from ui.dialogs.pdf_importer_dialog import PDFImporterDialog
 from core.vaults import get_obsidian_json_path, sync_obsidian_vaults
 
 _ASSETS = Path(__file__).resolve().parent / "assets"
@@ -73,6 +74,21 @@ def _available_screen_rects():
     return [screen.availableGeometry() for screen in app.screens()]
 
 
+def _should_restore_dock_state(
+    state,
+    restored_geometry: bool,
+    saved_layout_version,
+    current_layout_version: int,
+) -> bool:
+    """Return True when a saved dock layout is compatible with this UI version."""
+    if not state or not restored_geometry:
+        return False
+    try:
+        return int(saved_layout_version) == current_layout_version
+    except (TypeError, ValueError):
+        return False
+
+
 class MainWindow(QMainWindow):
     """
     Top-level GM Assistant window.
@@ -84,6 +100,7 @@ class MainWindow(QMainWindow):
 
     APP_NAME = "GM Assistant — Project Ceres"
     VERSION  = "0.1.0-scaffold"
+    LAYOUT_STATE_VERSION = 2
 
     def __init__(
         self,
@@ -98,6 +115,11 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(self.APP_NAME)
         self.setMinimumSize(QSize(900, 620))
         self.resize(QSize(1400, 860))
+        self.setDockOptions(
+            QMainWindow.DockOption.AnimatedDocks
+            | QMainWindow.DockOption.AllowNestedDocks
+            | QMainWindow.DockOption.AllowTabbedDocks
+        )
         self.setDockNestingEnabled(True)
 
         # Apply global stylesheet
@@ -264,11 +286,10 @@ class MainWindow(QMainWindow):
         self._now_playing_panel.register_source("Local Music", self._local_music_panel, "music.png")
         self._now_playing_panel.register_source("Syrinscape", self._syrinscape_panel, "syrinscape.png")
 
-        # 15. Equalizer — right side, tabbed after Now Playing
+        # 15. Equalizer - left side, standalone by default
         self._eq_panel = EqualizerPanel(self._config, self)
         self._eq_panel.status_message.connect(self._set_status)
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._eq_panel)  # type: ignore[attr-defined]
-        self.tabifyDockWidget(self._now_playing_panel, self._eq_panel)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self._eq_panel)  # type: ignore[attr-defined]
 
         self._eq_panel.eq_changed.connect(self._soundboard_panel.set_eq_bands)
         self._eq_panel.eq_changed.connect(self._local_music_panel.set_eq_bands)
@@ -277,7 +298,7 @@ class MainWindow(QMainWindow):
         self._visualiser_panel = VisualiserPanel(self)
         self._visualiser_panel.status_message.connect(self._set_status)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._visualiser_panel)  # type: ignore[attr-defined]
-        self.tabifyDockWidget(self._eq_panel, self._visualiser_panel)
+        self.tabifyDockWidget(self._now_playing_panel, self._visualiser_panel)
 
         # 17. Plex / Jellyfin — right side, tabbed after Visualiser
         self._plex_jellyfin_panel = PlexJellyfinPanel(self._config, self._run_command, self)
@@ -395,6 +416,10 @@ class MainWindow(QMainWindow):
         self._add_action(file_menu, "⚙  Settings",         self._open_settings,  "Ctrl+,")
         file_menu.addSeparator()
         self._add_action(file_menu, "✕  Exit",             self.close,           "Ctrl+Q")
+
+        # ── Tools menu — focused utilities ──
+        tools_menu = mb.addMenu("&Tools")
+        self._add_action(tools_menu, "PDF Importer...", self._open_pdf_importer)
 
         # ── View menu — panel toggles ──
         view_menu = mb.addMenu("&View")
@@ -547,6 +572,11 @@ class MainWindow(QMainWindow):
         dlg.saved.connect(self._on_preferences_saved)
         dlg.exec()
 
+    def _open_pdf_importer(self) -> None:
+        dlg = PDFImporterDialog(self._config, self._run_command, self)
+        dlg.status_message.connect(self._set_status)
+        dlg.exec()
+
     def _reset_layout(self) -> None:
         """Re-dock everything to default positions."""
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea,   self._chat_dock)        # type: ignore[attr-defined]
@@ -574,10 +604,9 @@ class MainWindow(QMainWindow):
         self.tabifyDockWidget(self._youtube_panel,    self._tidal_panel)
         self.tabifyDockWidget(self._tidal_panel,      self._local_music_panel)
         self.tabifyDockWidget(self._local_music_panel, self._now_playing_panel)
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,  self._eq_panel)            # type: ignore[attr-defined]
-        self.tabifyDockWidget(self._now_playing_panel, self._eq_panel)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea,   self._eq_panel)            # type: ignore[attr-defined]
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,  self._visualiser_panel)  # type: ignore[attr-defined]
-        self.tabifyDockWidget(self._eq_panel, self._visualiser_panel)
+        self.tabifyDockWidget(self._now_playing_panel, self._visualiser_panel)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,  self._plex_jellyfin_panel)  # type: ignore[attr-defined]
         self.tabifyDockWidget(self._visualiser_panel, self._plex_jellyfin_panel)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,  self._master_scene_panel)  # type: ignore[attr-defined]
@@ -606,13 +635,19 @@ class MainWindow(QMainWindow):
         settings = QSettings("ProjectCeres", "GMAssistant")
         geo = settings.value("geometry")
         state = settings.value("windowState")
+        layout_state_version = settings.value("layoutStateVersion", 0)
         restored_geometry = False
         if geo:
             self.restoreGeometry(geo)
             restored_geometry = self._restored_geometry_is_visible()
             if not restored_geometry:
                 self._reset_to_default_geometry()
-        if state and restored_geometry:
+        if _should_restore_dock_state(
+            state,
+            restored_geometry,
+            layout_state_version,
+            self.LAYOUT_STATE_VERSION,
+        ):
             self.restoreState(state)
 
     def _save_geometry(self) -> None:
@@ -620,6 +655,7 @@ class MainWindow(QMainWindow):
         settings = QSettings("ProjectCeres", "GMAssistant")
         settings.setValue("geometry", self.saveGeometry())
         settings.setValue("windowState", self.saveState())
+        settings.setValue("layoutStateVersion", self.LAYOUT_STATE_VERSION)
 
     def _restored_geometry_is_visible(self) -> bool:
         """Check whether restored geometry leaves the window on a real screen."""

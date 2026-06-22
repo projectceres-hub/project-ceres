@@ -273,8 +273,8 @@ Response pools and persona display names are defined at the top of `ui/panels/di
 ### PDF
 | Command | Description |
 |---|---|
-| `pdf-convert <path> [--map maps/dnd5e.yaml]` | Convert a single PDF to markdown |
-| `pdf-batch <folder> [--map maps/dnd5e.yaml]` | Batch-convert a folder of PDFs |
+| `pdf2md <path> [--map maps/dnd5e.yaml]` | Convert a single PDF to markdown |
+| `pdfbatch <folder> [--map maps/dnd5e.yaml]` | Batch-convert a folder of PDFs |
 | `pdf-send-to-vault --input <path>` | Convert and save directly to vault |
 
 ### Campaigns
@@ -293,6 +293,8 @@ Response pools and persona display names are defined at the top of `ui/panels/di
 | `session-reminder-run-now` | Immediately check for upcoming session reminders |
 | `session-create` | Create a new session note for a campaign |
 | `fgu-import-log` | Import a Fantasy Grounds chat log into a session note |
+| `fgu-import <campaign_path> [--types npc,pc,item,encounter,note] [--overwrite]` | Import FGU campaign entities into the active vault |
+| `fgu-export <output_xml_path> [--vault <vault_name>]` | Export FGU-tagged vault notes to standalone XML |
 
 ### Automation
 | Command | Description |

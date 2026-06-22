@@ -2221,6 +2221,80 @@ def cmd_fgu_import_log(args: str, config: Config) -> None:
         print(f"Error: Unexpected error: {e}")
 
 
+def cmd_fgu_import(args: str, config: Config) -> None:
+    """Import system-aware FGU campaign entities into the active vault."""
+    parts = shlex.split(args) if args else []
+    if not parts:
+        print("Usage: fgu-import <campaign_path> [--types npc,pc,item,encounter,note] [--overwrite]")
+        return
+
+    campaign_path = Path(parts[0]).expanduser().resolve()
+    entity_types = ["npc", "pc", "item"]
+    overwrite = "--overwrite" in parts
+
+    if "--types" in parts:
+        idx = parts.index("--types")
+        if idx + 1 >= len(parts):
+            print("Error: --types requires a comma-separated value")
+            return
+        entity_types = [
+            item.strip()
+            for item in parts[idx + 1].split(",")
+            if item.strip()
+        ]
+
+    if not campaign_path.exists():
+        print(f"Error: campaign path not found: {campaign_path}")
+        return
+
+    from pantheon.messor import import_campaign_entities
+
+    written, errors = import_campaign_entities(
+        campaign_path=campaign_path,
+        config=config,
+        entity_types=entity_types,
+        overwrite=overwrite,
+    )
+    print(f"Imported {written} note(s).")
+    for error in errors:
+        print(f"  {error}")
+
+
+def cmd_fgu_export(args: str, config: Config) -> None:
+    """Export FGU-tagged vault notes to a standalone XML file."""
+    parts = shlex.split(args) if args else []
+    if not parts:
+        print("Usage: fgu-export <output_xml_path> [--vault <vault_name>]")
+        return
+
+    output_path = Path(parts[0]).expanduser().resolve()
+    vault_name = config.current_vault
+    if "--vault" in parts:
+        idx = parts.index("--vault")
+        if idx + 1 >= len(parts):
+            print("Error: --vault requires a vault name")
+            return
+        vault_name = parts[idx + 1]
+
+    if not vault_name or vault_name not in (config.vaults or {}):
+        print("Error: no active vault. Use 'switch' first or pass --vault <name>.")
+        return
+
+    from pantheon.messor import export_entities_to_xml, read_fgu_notes_in_vault
+
+    vault_path = Path(config.vaults[vault_name])
+    notes_with_frontmatter = read_fgu_notes_in_vault(vault_path)
+    note_paths = [path for path, _fm in notes_with_frontmatter]
+    if not note_paths:
+        print(f"No fgu_entity notes found in vault: {vault_name}")
+        return
+
+    count, errors = export_entities_to_xml(note_paths, output_path)
+    print(f"Exported {count} record(s) to {output_path}.")
+    for error in errors:
+        print(f"  {error}")
+
+
 def cmd_session_create(args: str, config: Config) -> None:
     """
     Create a new session note for a campaign.
@@ -3248,6 +3322,16 @@ def _register_campaign_commands(config: Config) -> None:
         config, "fgu-import-log",
         partial(cmd_fgu_import_log, config=config),
         "Import a Fantasy Grounds chat log and attach it to a session note. Usage: fgu-import-log <campaign> <session> <log_path>",
+    )
+    register_command(
+        config, "fgu-import",
+        partial(cmd_fgu_import, config=config),
+        "Import FGU entities to the active vault. Usage: fgu-import <campaign_path> [--types npc,pc,item,encounter,note] [--overwrite]",
+    )
+    register_command(
+        config, "fgu-export",
+        partial(cmd_fgu_export, config=config),
+        "Export FGU-tagged vault notes to XML. Usage: fgu-export <output_xml_path> [--vault <vault_name>]",
     )
 
 

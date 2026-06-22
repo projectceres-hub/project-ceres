@@ -172,9 +172,9 @@ Implementations belong under `pantheon/<domain>/`. The conceptual names map to R
 ### 6.2 Central vs docked layout
 
 - **Central widget:** minimal dark placeholder. Ceres Chat is dockable, not central.
-- **Left dock:** `Ceres Chat`, `VaultNotesPanel`, `MixerPanel` (default order established in `MainWindow._build_panels`).
+- **Left dock:** `Ceres Chat`, `VaultNotesPanel`, `MixerPanel`, `EqualizerPanel` (default order established in `MainWindow._build_panels`).
 - **Bottom dock:** `ConsolePanel` (hidden by default if `config.console_hidden_default`).
-- **Right dock (tabbed stack):** Discord, Spotify, Soundboard, Fantasy Grounds, Scheduler, Browser, Syrinscape, YouTube, Tidal, Local Music, Now Playing, Equalizer, Visualiser, Plex / Jellyfin, Master Scenes.
+- **Right dock (tabbed stack):** Discord, Spotify, Soundboard, Fantasy Grounds, Scheduler, Browser, Syrinscape, YouTube, Tidal, Local Music, Now Playing, Visualiser, Plex / Jellyfin, Master Scenes.
 
 ### 6.3 Panel inventory (`ui/panels/`)
 

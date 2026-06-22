@@ -1,7 +1,7 @@
 # Project Ceres — Feature Roadmap
 
 > Living document. Update as items are started, completed, or deprioritised.
-> Last updated: 2026-04-15 (Phase 5 Item 3b — FGU import/export engine — complete)
+> Last updated: 2026-05-31 (Phase 5 FGU recovery; Infinite Table captured as future architecture)
 
 ---
 
@@ -17,7 +17,7 @@
 | Tidal | tidalapi OAuth (device flow), search, playlists, pygame playback, scene slots, Discord wiring |
 | Soundboard | pygame multi-channel, Sounds + Scenes tabs |
 | Volume Mixer | Per-source rows with icons, mute per channel |
-| Fantasy Grounds Unity | XML parser, characters/NPCs/items; Messor `FGUEntityParser` / import & standalone XML export (panel UI in 3c) |
+| Fantasy Grounds Unity | XML parser, characters/NPCs/items; Messor `FGUEntityParser`; background import UI; selectable standalone XML export |
 | Scheduler | Session scheduling, .ics export, Discord polls |
 | Browser | Embedded WebEngine, Obsidian clip, TTRPG bookmarks |
 | Vault & Notes | Obsidian vault browser, note CRUD, markdown preview |
@@ -105,7 +105,7 @@ A new dock panel that acts as a scene orchestrator — one named slot fires mult
 
 ### 3. ⚔ FGU ↔ Obsidian Deep Import
 
-**Priority: High | Scope: Large | Status: Backend import/export (3b) ✅ — UI (3c) pending**
+**Priority: High | Scope: Large | Status: Backend, templates, worker-based UI, and CLI recovery complete; real-campaign manual validation still required**
 
 The most complex item in Phase 5. Extends the existing FGU panel from surface-level XML browsing into a full bidirectional bridge — FGU entities become structured Obsidian notes, and notes can be exported back to FGU-compatible XML.
 
@@ -118,7 +118,7 @@ The most complex item in Phase 5. Extends the existing FGU panel from surface-le
 
 ---
 
-#### 3a. Research Spike — FGU XML Schemas
+#### 3a. Research Spike — FGU XML Schemas ✅ BASELINE CAPTURED
 
 Before writing a line of implementation code, we need to map the XML structure for each system. FGU stores campaign data as XML under `<campaign>/db.xml` (and split files in newer versions).
 
@@ -130,7 +130,7 @@ Before writing a line of implementation code, we need to map the XML structure f
 | Savage Worlds (`swade` ruleset) | Wildcard/Extra NPC fields, PC attributes/skills/edges, locations, gear |
 | Stars Without Number / OSR (`swnr`, generic OSR) | NPC fields (AC, HD, attacks, saves), PC fields (class, level, saves, skills), locations, equipment |
 
-**Deliverable from spike:** A `docs/fgu_schemas.md` document mapping XML node paths → Obsidian frontmatter keys for each system/entity combination. This document drives all implementation in 3b.
+**Deliverable from spike:** `docs/fgu_schemas.md` now documents the implemented baseline and remaining schema validation gaps. It should be expanded with real exported campaign samples before deeper system-specific parser work.
 
 ---
 
@@ -153,15 +153,15 @@ Before writing a line of implementation code, we need to map the XML structure f
 
 ---
 
-#### 3c. FGU Panel UI Extensions (`ui/panels/fgu_panel.py`)
+#### 3c. FGU Panel UI Extensions (`ui/panels/fgu_panel.py`) ✅ COMPLETE
 
-- **Import tab** (new tab in existing panel): entity type selector (NPCs / PCs / Locations / Items), system auto-detected from campaign ruleset, Import button, results log
-- **Export tab**: browse vault for notes tagged with `fgu_entity: true`, select one or more, Export → XML file
-- Progress/status signals for long imports (large campaigns can have hundreds of NPCs)
+- **Import tab**: entity type selector, ruleset display, overwrite toggle, background worker, progress bar, and result log.
+- **Export tab**: vault scan, selectable FGU-note list, Export Selected, Export All, and background XML export.
+- CLI commands: `fgu-import` and `fgu-export`.
 
 ---
 
-#### 3d. Note Templates (Ceres-defined, per system)
+#### 3d. Note Templates (Ceres-defined, per system) ✅ COMPLETE
 
 Ceres defines the canonical markdown layout for each entity type. These become Ceres templates (via Reparator) so users can customise them:
 
@@ -205,10 +205,10 @@ Ceres defines the canonical markdown layout for each entity type. These become C
 |---|---|---|---|
 | 1 | Plex/Jellyfin Discord wiring | Small | None — start immediately |
 | 2 | Master Scene Panel | Medium | ✅ Done |
-| 3a | FGU schema research spike | Research | None — can run in parallel with #2 |
+| 3a | FGU schema research spike | Research | Baseline captured; expand with real campaign samples |
 | 3b | FGU import/export engine (Messor) | Large | ✅ Done (3a complete) |
-| 3c | FGU panel UI extensions | Medium | 3b engine complete |
-| 3d | Note templates (all systems) | Small | 3b parsers define the fields |
+| 3c | FGU panel UI extensions | Medium | ✅ Done |
+| 3d | Note templates (all systems) | Small | ✅ Done |
 
 ---
 
@@ -219,3 +219,24 @@ Ceres defines the canonical markdown layout for each entity type. These become C
 **FGU export** should write a standalone importable XML file first (never mutate `db.xml` in place). A future version can offer in-place merge once the export format is validated against multiple FGU versions.
 
 **Bidirectional FGU design principle:** Obsidian is the note-taking layer; FGU is the game-state layer. On conflict (e.g. HP changed in both), FGU wins for mechanical data, Obsidian wins for narrative/description fields. Export should never overwrite FGU mechanical data without explicit user confirmation.
+
+---
+
+## Phase 6 — Shared Workspace & Infinite Table (Future)
+
+*Goal: support both the current Command Center and a future Infinite Table as synchronized views over the same workspace model.*
+
+This is not an immediate canvas build. The first step is architectural: expand the existing `pantheon/vervactor/workspace.py` state layer into a shared workspace object model. Command Center panels and the future Infinite Table must reference the same notes, NPCs, locations, encounters, audio sources, reminders, and scene objects rather than maintaining separate panel state and canvas state.
+
+### View Modes
+
+| Mode | Purpose |
+|---|---|
+| Command Center | Dockable/floating live-session panels for fast action |
+| Infinite Table | Free-panning spatial canvas for prep, relationship mapping, scene staging, and session overview |
+
+### First Implementation Slice
+
+- Write `docs/infinite_table_mode.md` as the architecture brief and AI delegation plan.
+- Extend workspace planning around object identity, layout profiles, and per-view presentation state.
+- Do not build the visual canvas until the shared model is explicit and reviewed.
