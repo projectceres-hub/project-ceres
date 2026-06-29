@@ -90,7 +90,7 @@ class VaultNotesPanel(QDockWidget):
         self._forward_stack: List[Path] = []
 
         self.setObjectName("VaultNotesPanel")
-        self.setMinimumSize(600, 260)
+        self.setMinimumSize(360, 260)
         self.setAllowedAreas(
             Qt.DockWidgetArea.LeftDockWidgetArea
             | Qt.DockWidgetArea.RightDockWidgetArea
@@ -111,7 +111,7 @@ class VaultNotesPanel(QDockWidget):
 
     def _build_ui(self) -> None:
         container = QWidget()
-        container.setMinimumSize(600, 230)
+        container.setMinimumSize(360, 230)
         root_layout = QVBoxLayout(container)
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
@@ -127,7 +127,7 @@ class VaultNotesPanel(QDockWidget):
 
     def _build_browser_page(self) -> QWidget:
         page = QWidget()
-        page.setMinimumSize(600, 230)
+        page.setMinimumSize(360, 230)
         layout = QVBoxLayout(page)
         layout.setContentsMargins(6, 6, 6, 6)
         layout.setSpacing(5)

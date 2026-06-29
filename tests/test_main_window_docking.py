@@ -43,11 +43,11 @@ class MainWindowDockingTests(unittest.TestCase):
             window.close()
 
     def test_stale_saved_dock_state_is_not_restored(self) -> None:
-        self.assertEqual(MainWindow.LAYOUT_STATE_VERSION, 4)
-        self.assertFalse(_should_restore_dock_state(b"old-state", True, 3, 4))
-        self.assertFalse(_should_restore_dock_state(b"old-state", False, 4, 4))
-        self.assertFalse(_should_restore_dock_state(None, True, 4, 4))
-        self.assertTrue(_should_restore_dock_state(b"current-state", True, 4, 4))
+        self.assertEqual(MainWindow.LAYOUT_STATE_VERSION, 5)
+        self.assertFalse(_should_restore_dock_state(b"old-state", True, 4, 5))
+        self.assertFalse(_should_restore_dock_state(b"old-state", False, 5, 5))
+        self.assertFalse(_should_restore_dock_state(None, True, 5, 5))
+        self.assertTrue(_should_restore_dock_state(b"current-state", True, 5, 5))
 
     def test_left_tools_are_real_movable_docks(self) -> None:
         window = self._build_window()
@@ -80,7 +80,8 @@ class MainWindowDockingTests(unittest.TestCase):
             self.assertGreaterEqual(window._chat_panel.minimumHeight(), 320)
             self.assertGreaterEqual(window._vault_panel.minimumHeight(), 260)
             self.assertGreaterEqual(window._vault_panel.widget().minimumHeight(), 230)
-            self.assertGreaterEqual(window._mixer_panel.minimumHeight(), 380)
+            self.assertGreaterEqual(window._mixer_panel.minimumHeight(), 220)
+            self.assertLessEqual(window._mixer_panel.minimumWidth(), 420)
         finally:
             window.close()
 
@@ -106,21 +107,24 @@ class MainWindowDockingTests(unittest.TestCase):
         finally:
             window.close()
 
-    def test_default_left_layout_spills_into_second_column(self) -> None:
+    def test_default_left_layout_uses_two_resizable_tool_columns(self) -> None:
         window = self._build_window()
         try:
             window.resize(1400, 900)
             window.show()
             self.app.processEvents()
 
-            self.assertGreater(
-                window._mixer_panel.geometry().x(),
-                window._chat_dock.geometry().x(),
-            )
-            self.assertGreater(
-                window._eq_panel.geometry().x(),
-                window._vault_panel.geometry().x(),
-            )
+            chat = window._chat_dock.geometry()
+            vault = window._vault_panel.geometry()
+            mixer = window._mixer_panel.geometry()
+            eq = window._eq_panel.geometry()
+
+            self.assertEqual(vault.x(), chat.x())
+            self.assertLessEqual(abs(vault.width() - chat.width()), 4)
+            self.assertEqual(eq.x(), mixer.x())
+            self.assertLessEqual(abs(eq.width() - mixer.width()), 4)
+            self.assertGreater(mixer.x(), chat.x())
+            self.assertLessEqual(vault.right() - mixer.x(), 12)
         finally:
             window.close()
 

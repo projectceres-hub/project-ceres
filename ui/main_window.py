@@ -100,7 +100,7 @@ class MainWindow(QMainWindow):
 
     APP_NAME = "GM Assistant — Project Ceres"
     VERSION  = "0.1.0-scaffold"
-    LAYOUT_STATE_VERSION = 4
+    LAYOUT_STATE_VERSION = 5
 
     def __init__(
         self,
@@ -155,7 +155,7 @@ class MainWindow(QMainWindow):
 
         self._chat_dock = QDockWidget("Ceres Chat", self)
         self._chat_dock.setObjectName("CeresChatDock")
-        self._chat_dock.setMinimumSize(QSize(600, 350))
+        self._chat_dock.setMinimumSize(QSize(360, 350))
         self._chat_dock.setWidget(self._chat_panel)
         self._chat_dock.setAllowedAreas(
             Qt.DockWidgetArea.LeftDockWidgetArea
@@ -173,8 +173,6 @@ class MainWindow(QMainWindow):
         self._vault_panel = VaultNotesPanel(self._config, self._run_command, self)
         self._vault_panel.status_message.connect(self._set_status)
         self._vault_panel.note_opened.connect(self._on_note_opened)
-        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self._vault_panel)  # type: ignore[attr-defined]
-        self.splitDockWidget(self._chat_dock, self._vault_panel, Qt.Orientation.Vertical)
 
         # 2. Console — bottom (power-user / raw output; hidden by default)
         self._console_panel = ConsolePanel(self._config, self._run_command, self)
@@ -265,8 +263,6 @@ class MainWindow(QMainWindow):
         # 13. Mixer — left side (all source panels must exist before register_source)
         self._mixer_panel = MixerPanel(self)
         self._mixer_panel.status_message.connect(self._set_status)
-        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self._mixer_panel)  # type: ignore[attr-defined]
-        self.splitDockWidget(self._chat_dock, self._mixer_panel, Qt.Orientation.Horizontal)
 
         self._mixer_panel.register_source("Soundboard", self._soundboard_panel)
         self._mixer_panel.register_source("Syrinscape", self._syrinscape_panel, "syrinscape.png")
@@ -290,8 +286,7 @@ class MainWindow(QMainWindow):
         # 15. Equalizer - left side, standalone by default
         self._eq_panel = EqualizerPanel(self._config, self)
         self._eq_panel.status_message.connect(self._set_status)
-        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self._eq_panel)  # type: ignore[attr-defined]
-        self.splitDockWidget(self._mixer_panel, self._eq_panel, Qt.Orientation.Vertical)
+        self._dock_left_tool_columns()
 
         self._eq_panel.eq_changed.connect(self._soundboard_panel.set_eq_bands)
         self._eq_panel.eq_changed.connect(self._local_music_panel.set_eq_bands)
@@ -580,15 +575,19 @@ class MainWindow(QMainWindow):
         dlg.status_message.connect(self._set_status)
         dlg.exec()
 
+    def _dock_left_tool_columns(self) -> None:
+        """Arrange left-side tools as two independently resizable columns."""
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self._chat_dock)  # type: ignore[attr-defined]
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self._mixer_panel)  # type: ignore[attr-defined]
+        self.splitDockWidget(self._chat_dock, self._mixer_panel, Qt.Orientation.Horizontal)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self._vault_panel)  # type: ignore[attr-defined]
+        self.splitDockWidget(self._chat_dock, self._vault_panel, Qt.Orientation.Vertical)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self._eq_panel)  # type: ignore[attr-defined]
+        self.splitDockWidget(self._mixer_panel, self._eq_panel, Qt.Orientation.Vertical)
+
     def _reset_layout(self) -> None:
         """Re-dock everything to default positions."""
-        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea,   self._chat_dock)        # type: ignore[attr-defined]
-        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea,   self._vault_panel)      # type: ignore[attr-defined]
-        self.splitDockWidget(self._chat_dock, self._vault_panel, Qt.Orientation.Vertical)
-        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea,   self._mixer_panel)      # type: ignore[attr-defined]
-        self.splitDockWidget(self._chat_dock, self._mixer_panel, Qt.Orientation.Horizontal)
-        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea,   self._eq_panel)         # type: ignore[attr-defined]
-        self.splitDockWidget(self._mixer_panel, self._eq_panel, Qt.Orientation.Vertical)
+        self._dock_left_tool_columns()
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self._console_panel)    # type: ignore[attr-defined]
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,  self._discord_panel)     # type: ignore[attr-defined]
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,  self._spotify_panel)     # type: ignore[attr-defined]

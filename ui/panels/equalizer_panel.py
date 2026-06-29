@@ -17,14 +17,14 @@ try:
     from PyQt5.QtWidgets import (
         QDockWidget, QWidget, QVBoxLayout, QHBoxLayout,
         QPushButton, QLabel, QSlider, QComboBox, QCheckBox,
-        QSizePolicy, QFrame,
+        QSizePolicy, QFrame, QScrollArea,
     )
     from PyQt5.QtCore import Qt, QTimer, pyqtSignal as Signal
 except ImportError:
     from PySide6.QtWidgets import (  # type: ignore
         QDockWidget, QWidget, QVBoxLayout, QHBoxLayout,
         QPushButton, QLabel, QSlider, QComboBox, QCheckBox,
-        QSizePolicy, QFrame,
+        QSizePolicy, QFrame, QScrollArea,
     )
     from PySide6.QtCore import Qt, QTimer, Signal  # type: ignore
 
@@ -152,6 +152,7 @@ class EqualizerPanel(QDockWidget):
         self._sliders: List[QSlider] = []
         self._db_labels: List[QLabel] = []
         self._build_ui()
+        self.setMinimumSize(360, 260)
         self._load_from_config()
         # After MainWindow wires eq_changed, push persisted state to panels
         QTimer.singleShot(0, self._emit)
@@ -160,6 +161,7 @@ class EqualizerPanel(QDockWidget):
 
     def _build_ui(self) -> None:
         container = QWidget()
+        container.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         root = QVBoxLayout(container)
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(6)
@@ -236,7 +238,14 @@ class EqualizerPanel(QDockWidget):
 
             bands_layout.addLayout(col)
 
-        root.addWidget(bands_frame)
+        bands_scroll = QScrollArea()
+        bands_scroll.setWidgetResizable(False)
+        bands_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        bands_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        bands_scroll.setMinimumHeight(174)
+        bands_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        bands_scroll.setWidget(bands_frame)
+        root.addWidget(bands_scroll)
 
         # ── Scope note ────────────────────────────────────────────────────────
         note = QLabel(

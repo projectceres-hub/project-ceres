@@ -82,7 +82,7 @@ class MixerWinampLayoutTest(unittest.TestCase):
         ):
             panel.register_source(name, Source(), "music.png")
 
-        self.assertGreaterEqual(panel.minimumWidth(), 600)
-        self.assertGreaterEqual(panel.minimumHeight(), 380)
+        self.assertLessEqual(panel.minimumWidth(), 420)
+        self.assertGreaterEqual(panel.minimumHeight(), 220)
         self.assertGreaterEqual(panel._channels_widget.minimumWidth(), 560)
         self.assertGreaterEqual(panel._channels_widget.minimumHeight(), 160)

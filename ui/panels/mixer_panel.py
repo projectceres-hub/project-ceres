@@ -45,8 +45,8 @@ except ImportError:
 from ui.theme import ACCENT, ACCENT2, BG, BORDER, MUTED, TEXT, PANEL, SURFACE, ERROR
 
 _ASSETS = Path(__file__).resolve().parent.parent / "assets"
-_BASE_MIN_WIDTH = 600
-_BASE_MIN_HEIGHT = 380
+_BASE_MIN_WIDTH = 360
+_BASE_MIN_HEIGHT = 220
 _CHANNEL_COLUMN_WIDTH = 76
 _CHANNEL_BANK_HEIGHT = 160
 
@@ -148,7 +148,7 @@ class MixerPanel(QDockWidget):
         # ── Scroll area for dynamic channel rows ──
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)  # type: ignore[attr-defined]
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)  # type: ignore[attr-defined]
         scroll.setMinimumHeight(_CHANNEL_BANK_HEIGHT + 12)
         scroll.setStyleSheet(f"background: {PANEL}; border: none;")
 
@@ -350,7 +350,7 @@ class MixerPanel(QDockWidget):
             count * _CHANNEL_COLUMN_WIDTH + max(0, count - 1) * 4 + 8,
         )
         self._channels_widget.setMinimumSize(bank_width, _CHANNEL_BANK_HEIGHT)
-        self.setMinimumSize(max(_BASE_MIN_WIDTH, bank_width + 24), _BASE_MIN_HEIGHT)
+        self.setMinimumSize(_BASE_MIN_WIDTH, _BASE_MIN_HEIGHT)
 
     # ══════════════════════════════════════════════════════════════════════════
     # Channel event handlers
