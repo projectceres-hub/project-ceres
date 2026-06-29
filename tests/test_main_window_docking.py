@@ -31,23 +31,23 @@ class MainWindowDockingTests(unittest.TestCase):
         with patch.object(MainWindow, "_restore_geometry", lambda self: None):
             return MainWindow(config, lambda _command: "")
 
-    def test_default_dock_policy_allows_split_or_tab_drops_without_forcing_tabs(self) -> None:
+    def test_default_dock_policy_allows_split_drops_without_user_tab_drops(self) -> None:
         window = self._build_window()
         try:
             options = window.dockOptions()
 
             self.assertTrue(options & QMainWindow.DockOption.AllowNestedDocks)
-            self.assertTrue(options & QMainWindow.DockOption.AllowTabbedDocks)
+            self.assertFalse(options & QMainWindow.DockOption.AllowTabbedDocks)
             self.assertFalse(options & QMainWindow.DockOption.ForceTabbedDocks)
         finally:
             window.close()
 
     def test_stale_saved_dock_state_is_not_restored(self) -> None:
-        self.assertEqual(MainWindow.LAYOUT_STATE_VERSION, 5)
-        self.assertFalse(_should_restore_dock_state(b"old-state", True, 4, 5))
-        self.assertFalse(_should_restore_dock_state(b"old-state", False, 5, 5))
-        self.assertFalse(_should_restore_dock_state(None, True, 5, 5))
-        self.assertTrue(_should_restore_dock_state(b"current-state", True, 5, 5))
+        self.assertEqual(MainWindow.LAYOUT_STATE_VERSION, 7)
+        self.assertFalse(_should_restore_dock_state(b"old-state", True, 6, 7))
+        self.assertFalse(_should_restore_dock_state(b"old-state", False, 7, 7))
+        self.assertFalse(_should_restore_dock_state(None, True, 7, 7))
+        self.assertTrue(_should_restore_dock_state(b"current-state", True, 7, 7))
 
     def test_left_tools_are_real_movable_docks(self) -> None:
         window = self._build_window()
@@ -69,6 +69,10 @@ class MainWindowDockingTests(unittest.TestCase):
                 self.assertTrue(
                     dock.features() & QDockWidget.DockWidgetFeature.DockWidgetFloatable
                 )
+                self.assertEqual(
+                    dock.allowedAreas(),
+                    Qt.DockWidgetArea.AllDockWidgetAreas,
+                )
         finally:
             window.close()
 
@@ -82,6 +86,8 @@ class MainWindowDockingTests(unittest.TestCase):
             self.assertGreaterEqual(window._vault_panel.widget().minimumHeight(), 230)
             self.assertGreaterEqual(window._mixer_panel.minimumHeight(), 220)
             self.assertLessEqual(window._mixer_panel.minimumWidth(), 420)
+            self.assertGreaterEqual(window._eq_panel.minimumHeight(), 220)
+            self.assertLessEqual(window._eq_panel.maximumHeight(), 260)
         finally:
             window.close()
 
@@ -126,6 +132,7 @@ class MainWindowDockingTests(unittest.TestCase):
             self.assertGreater(mixer.x(), chat.x())
             self.assertLessEqual(vault.right() - mixer.x(), 12)
             self.assertLessEqual(mixer.height(), 260)
+            self.assertLessEqual(eq.height(), 260)
         finally:
             window.close()
 
@@ -148,6 +155,24 @@ class MainWindowDockingTests(unittest.TestCase):
                 window.dockWidgetArea(window._mixer_panel),
                 Qt.DockWidgetArea.LeftDockWidgetArea,
             )
+        finally:
+            window.close()
+
+    def test_modules_menu_keeps_browser_label_when_default_page_title_changes(self) -> None:
+        window = self._build_window()
+        try:
+            window._browser_panel._on_title_changed("D&D Beyond")
+
+            modules_menu = next(
+                action.menu()
+                for action in window.menuBar().actions()
+                if action.text().replace("&", "") == "Modules"
+            )
+            module_action_texts = [action.text() for action in modules_menu.actions()]
+
+            self.assertIn("Browser", module_action_texts)
+            self.assertNotIn("D&D Beyond", module_action_texts)
+            self.assertEqual(window._browser_panel._bookmarks[0], ("D&D Beyond", "https://www.dndbeyond.com"))
         finally:
             window.close()
 

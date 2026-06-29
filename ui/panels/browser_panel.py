@@ -571,6 +571,7 @@ class BrowserPanel(QDockWidget):
         """Update dock tab text with page title (no emoji — tab icon is chrome.png)."""
         display = title[:40] if title else "Browser"
         self.setWindowTitle(display)
+        self.toggleViewAction().setText("Browser")
         self.tab_title_changed.emit()
 
     # ══════════════════════════════════════════════════════════════════════════

@@ -152,7 +152,8 @@ class EqualizerPanel(QDockWidget):
         self._sliders: List[QSlider] = []
         self._db_labels: List[QLabel] = []
         self._build_ui()
-        self.setMinimumSize(360, 260)
+        self.setMinimumSize(360, 220)
+        self.setMaximumHeight(260)
         self._load_from_config()
         # After MainWindow wires eq_changed, push persisted state to panels
         QTimer.singleShot(0, self._emit)

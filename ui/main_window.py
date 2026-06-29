@@ -100,7 +100,7 @@ class MainWindow(QMainWindow):
 
     APP_NAME = "GM Assistant — Project Ceres"
     VERSION  = "0.1.0-scaffold"
-    LAYOUT_STATE_VERSION = 5
+    LAYOUT_STATE_VERSION = 7
 
     def __init__(
         self,
@@ -118,7 +118,6 @@ class MainWindow(QMainWindow):
         self.setDockOptions(
             QMainWindow.DockOption.AnimatedDocks
             | QMainWindow.DockOption.AllowNestedDocks
-            | QMainWindow.DockOption.AllowTabbedDocks
         )
         self.setDockNestingEnabled(True)
 
@@ -577,6 +576,13 @@ class MainWindow(QMainWindow):
 
     def _dock_left_tool_columns(self) -> None:
         """Arrange left-side tools as two independently resizable columns."""
+        for dock in (
+            self._chat_dock,
+            self._vault_panel,
+            self._mixer_panel,
+            self._eq_panel,
+        ):
+            dock.setAllowedAreas(Qt.DockWidgetArea.AllDockWidgetAreas)  # type: ignore[attr-defined]
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self._chat_dock)  # type: ignore[attr-defined]
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self._mixer_panel)  # type: ignore[attr-defined]
         self.splitDockWidget(self._chat_dock, self._mixer_panel, Qt.Orientation.Horizontal)
