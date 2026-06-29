@@ -38,6 +38,7 @@ tools/converted/*.html
 tools/converted/*.txt
 
 # Misc dev artifacts
+.test_tmp/
 coding library
 git-save.ps1
 SCRATCHPAD.md

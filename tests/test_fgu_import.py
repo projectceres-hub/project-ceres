@@ -6,6 +6,12 @@ from core.config import Config
 from pantheon.messor.fgu_import import import_campaign_entities
 
 
+def _test_temp_parent() -> Path:
+    root = Path(__file__).resolve().parents[1] / ".test_tmp"
+    root.mkdir(exist_ok=True)
+    return root
+
+
 def _write_campaign(root: Path, name: str = "Ceres Test Campaign") -> Path:
     campaign = root / name
     campaign.mkdir()
@@ -33,7 +39,7 @@ def _config_for(vault: Path) -> Config:
 
 class FGUImportTests(unittest.TestCase):
     def test_import_without_overwrite_preserves_existing_note(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(dir=_test_temp_parent()) as tmp:
             root = Path(tmp)
             campaign = _write_campaign(root)
             vault = root / "vault"
@@ -53,7 +59,7 @@ class FGUImportTests(unittest.TestCase):
             self.assertTrue(any("Skipped existing note" in err for err in errors))
 
     def test_import_with_overwrite_replaces_existing_note(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(dir=_test_temp_parent()) as tmp:
             root = Path(tmp)
             campaign = _write_campaign(root)
             vault = root / "vault"
@@ -77,7 +83,7 @@ class FGUImportTests(unittest.TestCase):
             self.assertNotEqual(text, "old content")
 
     def test_import_reports_progress_for_each_notespec(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(dir=_test_temp_parent()) as tmp:
             root = Path(tmp)
             campaign = _write_campaign(root)
             vault = root / "vault"

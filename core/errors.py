@@ -36,8 +36,6 @@ LOG_FILE = LOG_DIR / "errors.log"
 
 def _setup_logger() -> logging.Logger:
     """Create a rotating file logger for crash/error events."""
-    LOG_DIR.mkdir(exist_ok=True)
-
     logger = logging.getLogger("project_ceres.errors")
     logger.setLevel(logging.DEBUG)
 
@@ -45,15 +43,22 @@ def _setup_logger() -> logging.Logger:
         return logger  # Already configured — avoid duplicate handlers on reload
 
     # Rotating: 5 MB per file, keep 3 backups → ~15 MB max
-    file_handler = RotatingFileHandler(
-        LOG_FILE, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
-    )
-    file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(logging.Formatter(
+    file_formatter = logging.Formatter(
         fmt="[%(asctime)s] %(levelname)s\n%(message)s\n" + "-" * 60,
         datefmt="%Y-%m-%d %H:%M:%S",
-    ))
-    logger.addHandler(file_handler)
+    )
+
+    file_log_error = None
+    try:
+        LOG_DIR.mkdir(exist_ok=True)
+        file_handler = RotatingFileHandler(
+            LOG_FILE, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
+        )
+        file_handler.setLevel(logging.DEBUG)
+        file_handler.setFormatter(file_formatter)
+        logger.addHandler(file_handler)
+    except OSError as exc:
+        file_log_error = exc
 
     # Echo WARNING and above to stderr so they also appear in the terminal
     console_handler = logging.StreamHandler(sys.stderr)
@@ -63,6 +68,13 @@ def _setup_logger() -> logging.Logger:
         datefmt="%H:%M:%S",
     ))
     logger.addHandler(console_handler)
+
+    if file_log_error is not None:
+        logger.warning(
+            "Could not open crash log file %s: %s",
+            LOG_FILE,
+            file_log_error,
+        )
 
     return logger
 
