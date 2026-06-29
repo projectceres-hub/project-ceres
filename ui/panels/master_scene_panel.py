@@ -28,6 +28,7 @@ try:
         QSizePolicy,
         QFrame,
         QMenu,
+        QSlider,
     )
     from PyQt5.QtCore import Qt, pyqtSignal as Signal
 except ImportError:
@@ -46,6 +47,7 @@ except ImportError:
         QSizePolicy,
         QFrame,
         QMenu,
+        QSlider,
     )
     from PySide6.QtCore import Qt, Signal  # type: ignore
 
@@ -177,6 +179,9 @@ class MasterScenePanel(QDockWidget):
         self._config = config
         self._scenes: List[Dict[str, Any]] = self._load_scenes()
         self._slot_buttons: List[QPushButton] = []
+        self._active_scene_name = ""
+        self._scene_paused = False
+        self._campaign_volume = 80
 
         self._build_ui()
 
@@ -185,12 +190,41 @@ class MasterScenePanel(QDockWidget):
         outer = QWidget()
         outer.setStyleSheet(f"background: {BG};")
         main = QVBoxLayout(outer)
-        main.setContentsMargins(8, 8, 8, 8)
-        main.setSpacing(8)
+        main.setContentsMargins(6, 6, 6, 6)
+        main.setSpacing(6)
 
-        toolbar = QHBoxLayout()
+        self._toolbar_frame = QFrame()
+        self._toolbar_frame.setMaximumHeight(42)
+        self._toolbar_frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._toolbar_frame.setStyleSheet(
+            f"QFrame {{ background: {PANEL}; border: 1px solid {BORDER}; border-radius: 3px; }}"
+        )
+        toolbar = QHBoxLayout(self._toolbar_frame)
+        toolbar.setContentsMargins(6, 4, 6, 4)
+        toolbar.setSpacing(6)
+
+        self._currently_playing_label = QLabel("Currently: Nothing playing")
+        self._currently_playing_label.setStyleSheet(f"color: {TEXT}; font-size: 10px;")
+        self._currently_playing_label.setWordWrap(False)
+        self._currently_playing_label.setFixedWidth(150)
+        toolbar.addWidget(self._currently_playing_label)
+
+        self._pause_btn = QPushButton("Pause")
+        self._pause_btn.setFixedWidth(64)
+        self._pause_btn.setFixedHeight(28)
+        self._pause_btn.setEnabled(False)
+        self._pause_btn.setStyleSheet(
+            f"QPushButton {{ background: {PANEL}; color: {TEXT};"
+            f" border: 1px solid {BORDER}; border-radius: 4px; padding: 4px 12px; }}"
+            f"QPushButton:hover {{ border-color: {ACCENT}; }}"
+            f"QPushButton:disabled {{ color: {MUTED}; border-color: {BORDER}; }}"
+        )
+        self._pause_btn.clicked.connect(self._toggle_pause_targets)
+        toolbar.addWidget(self._pause_btn)
+
         stop_btn = QPushButton("Stop All")
-        stop_btn.setFixedHeight(32)
+        stop_btn.setFixedWidth(78)
+        stop_btn.setFixedHeight(28)
         stop_btn.setStyleSheet(
             f"QPushButton {{ background: {PANEL}; color: {TEXT};"
             f" border: 2px solid {ACCENT}; border-radius: 4px; padding: 4px 12px; }}"
@@ -199,19 +233,42 @@ class MasterScenePanel(QDockWidget):
         stop_btn.clicked.connect(self._stop_all)
         toolbar.addWidget(stop_btn)
 
+        vol_lbl = QLabel("Vol")
+        vol_lbl.setStyleSheet(f"color: {MUTED}; font-size: 10px;")
+        vol_lbl.setFixedWidth(24)
+        toolbar.addWidget(vol_lbl)
+
+        self._volume_slider = QSlider(Qt.Orientation.Horizontal)  # type: ignore[attr-defined]
+        self._volume_slider.setRange(0, 100)
+        self._volume_slider.setValue(self._campaign_volume)
+        self._volume_slider.setFixedWidth(90)
+        self._volume_slider.setToolTip("Campaign Scenes volume")
+        self._volume_slider.valueChanged.connect(self._on_campaign_volume_changed)
+        toolbar.addWidget(self._volume_slider)
+
+        self._volume_label = QLabel(f"{self._campaign_volume}%")
+        self._volume_label.setStyleSheet(f"color: {MUTED}; font-size: 10px; min-width: 32px;")
+        self._volume_label.setFixedWidth(34)
+        toolbar.addWidget(self._volume_label)
+
         self._status_lbl = QLabel("")
         self._status_lbl.setStyleSheet(f"color: {MUTED}; font-size: 10px;")
-        self._status_lbl.setWordWrap(True)
+        self._status_lbl.setWordWrap(False)
         toolbar.addWidget(self._status_lbl, 1)
-        main.addLayout(toolbar)
+        main.addWidget(self._toolbar_frame)
 
-        grid_frame = QFrame()
-        grid_frame.setStyleSheet(
+        self._grid_frame = QFrame()
+        self._grid_frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._grid_frame.setStyleSheet(
             f"QFrame {{ background: {PANEL}; border: 1px solid {BORDER}; border-radius: 6px; }}"
         )
-        grid = QGridLayout(grid_frame)
+        grid = QGridLayout(self._grid_frame)
         grid.setContentsMargins(8, 8, 8, 8)
         grid.setSpacing(8)
+        for row in range(2):
+            grid.setRowStretch(row, 1)
+        for col in range(4):
+            grid.setColumnStretch(col, 1)
 
         self._slot_buttons = []
         for index in range(NUM_SLOTS):
@@ -220,12 +277,65 @@ class MasterScenePanel(QDockWidget):
             row, col = index // 4, index % 4
             grid.addWidget(btn, row, col)
 
-        main.addWidget(grid_frame)
+        main.addWidget(self._grid_frame, 1)
         self.setWidget(outer)
 
+    def _iter_target_panels(self):
+        for p in self._panel_refs.values():
+            if p is not None:
+                yield p
+
+    def _set_currently_playing(self, text: str) -> None:
+        self._currently_playing_label.setText(text)
+
+    def _set_active_scene(self, name: str) -> None:
+        self._active_scene_name = name
+        self._scene_paused = False
+        self._pause_btn.setText("Pause")
+        self._pause_btn.setEnabled(True)
+        self._set_currently_playing(f"Currently: {name}")
+
+    def _clear_active_scene(self, text: str = "Stopped") -> None:
+        self._active_scene_name = ""
+        self._scene_paused = False
+        self._pause_btn.setText("Pause")
+        self._pause_btn.setEnabled(False)
+        self._set_currently_playing(text)
+
+    def _toggle_pause_targets(self) -> None:
+        if not self._active_scene_name:
+            return
+        for panel in self._iter_target_panels():
+            handler = getattr(panel, "handle_command", None)
+            if handler is None:
+                continue
+            try:
+                handler("pause", "")
+            except Exception:
+                pass
+        self._scene_paused = not self._scene_paused
+        if self._scene_paused:
+            self._pause_btn.setText("Resume")
+            self._set_currently_playing(f"Paused: {self._active_scene_name}")
+        else:
+            self._pause_btn.setText("Pause")
+            self._set_currently_playing(f"Currently: {self._active_scene_name}")
+
+    def _on_campaign_volume_changed(self, value: int) -> None:
+        self._campaign_volume = max(0, min(100, int(value)))
+        self._volume_label.setText(f"{self._campaign_volume}%")
+        for panel in self._iter_target_panels():
+            setter = getattr(panel, "set_volume", None)
+            if setter is None:
+                continue
+            try:
+                setter(self._campaign_volume)
+            except Exception:
+                pass
+
     def _style_slot_btn(self, btn: QPushButton) -> None:
-        btn.setMinimumHeight(64)
-        btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        btn.setMinimumHeight(58)
+        btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         btn.setStyleSheet(
             f"QPushButton {{ background: {SURFACE}; color: {TEXT};"
             f" border: 1px solid {BORDER}; border-radius: 4px; padding: 6px;"
@@ -347,6 +457,8 @@ class MasterScenePanel(QDockWidget):
         state = load_workspace_state(self._config)
         state.current_scene = name
         save_workspace_state(self._config, state)
+        self._set_active_scene(name)
+        self._on_campaign_volume_changed(self._campaign_volume)
         self.status_message.emit(f"Playing scene: {name}")
         self._status_lbl.setText(f"Last: {name}")
 
@@ -367,6 +479,7 @@ class MasterScenePanel(QDockWidget):
                 p.handle_command("stop", "")
             except Exception:
                 pass
+        self._clear_active_scene("Stopped")
         self.status_message.emit("All master scene targets stopped.")
         self._status_lbl.setText("Stopped all.")
 

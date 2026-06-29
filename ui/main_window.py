@@ -372,7 +372,6 @@ class MainWindow(QMainWindow):
         "Visualiser":       "music.png",
         "Plex / Jellyfin":  "music.png",
         "Audio Console":    "music.png",
-        "Campaign Scenes":  "music.png",
     }
 
     def _apply_tab_icons(self) -> None:

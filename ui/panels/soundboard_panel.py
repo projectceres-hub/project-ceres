@@ -238,13 +238,16 @@ class SoundboardPanel(QDockWidget):
         header.addWidget(self._vol_slider)
         outer_layout.addLayout(header)
 
-        console = QSplitter(Qt.Orientation.Horizontal)  # type: ignore[attr-defined]
-        console.setStyleSheet(f"QSplitter::handle {{ background: {BORDER}; width: 3px; }}")
-        console.addWidget(self._build_soundset_pane())
-        console.addWidget(self._build_elements_pane())
-        console.addWidget(self._build_scene_pane())
-        console.setSizes([210, 520, 300])
-        outer_layout.addWidget(console, 1)
+        self._console_splitter = QSplitter(Qt.Orientation.Horizontal)  # type: ignore[attr-defined]
+        self._console_splitter.setStyleSheet(f"QSplitter::handle {{ background: {BORDER}; width: 3px; }}")
+        self._console_splitter.addWidget(self._build_soundset_pane())
+        self._console_splitter.addWidget(self._build_elements_pane())
+        self._console_splitter.addWidget(self._build_scene_pane())
+        self._console_splitter_default_sizes = [240, 240, 240]
+        for index in range(3):
+            self._console_splitter.setStretchFactor(index, 1)
+        self._console_splitter.setSizes(self._console_splitter_default_sizes)
+        outer_layout.addWidget(self._console_splitter, 1)
 
         now_row = QHBoxLayout()
         self._now_playing_label = QLabel("-- idle --")
@@ -315,8 +318,8 @@ class SoundboardPanel(QDockWidget):
         self._campaign_scene_layout.addWidget(waiting)
         self._campaign_scene_layout.addStretch()
 
-        self._scene_tabs.addTab(campaign, "Campaign Scenes")
         self._scene_tabs.addTab(self._build_scenes_tab(), "Sound Scenes")
+        self._scene_tabs.addTab(campaign, "Campaign Scenes")
         layout.addWidget(self._scene_tabs, 1)
         return pane
 
@@ -455,7 +458,7 @@ class SoundboardPanel(QDockWidget):
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(4)
 
-        slots_hdr = QLabel("Slots")
+        slots_hdr = QLabel("Sounds")
         slots_hdr.setStyleSheet(
             f"color: {ACCENT}; font-weight: bold; font-size: 10px; padding: 2px 4px;"
         )
@@ -484,7 +487,9 @@ class SoundboardPanel(QDockWidget):
         right_layout.addWidget(add_slot_btn)
 
         splitter.addWidget(right_widget)
-        splitter.setSizes([150, 320])
+        self._sound_scene_splitter = splitter
+        self._sound_scene_splitter_default_sizes = [300, 300]
+        self._sound_scene_splitter.setSizes(self._sound_scene_splitter_default_sizes)
 
         layout.addWidget(splitter, 1)
         return w
@@ -944,7 +949,7 @@ class SoundboardPanel(QDockWidget):
         scene = self._scenes[self._current_scene_idx]
 
         if not scene.slots:
-            hint = QLabel('No slots yet.\nClick "＋ Add Sound to Scene".')
+            hint = QLabel('No sounds yet.\nClick "＋ Add Sound to Scene".')
             hint.setAlignment(Qt.AlignmentFlag.AlignCenter)  # type: ignore[attr-defined]
             hint.setStyleSheet(f"color: {MUTED}; padding: 16px;")
             self._slot_scroll_layout.addWidget(hint)

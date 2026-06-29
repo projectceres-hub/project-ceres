@@ -167,6 +167,7 @@ class MainWindowDockingTests(unittest.TestCase):
                 window._soundboard_panel.campaign_scene_handler(),
             )
             self.assertEqual(window._master_scene_panel.windowTitle(), "Campaign Scenes")
+            self.assertNotIn("Campaign Scenes", window._TAB_ICONS)
             self.assertNotIn(
                 window._master_scene_panel,
                 window.tabifiedDockWidgets(window._plex_jellyfin_panel),
