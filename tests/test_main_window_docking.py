@@ -125,6 +125,7 @@ class MainWindowDockingTests(unittest.TestCase):
             self.assertLessEqual(abs(eq.width() - mixer.width()), 4)
             self.assertGreater(mixer.x(), chat.x())
             self.assertLessEqual(vault.right() - mixer.x(), 12)
+            self.assertLessEqual(mixer.height(), 260)
         finally:
             window.close()
 

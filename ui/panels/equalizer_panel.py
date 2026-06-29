@@ -164,7 +164,17 @@ class EqualizerPanel(QDockWidget):
         container.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         root = QVBoxLayout(container)
         root.setContentsMargins(8, 8, 8, 8)
-        root.setSpacing(6)
+        root.setSpacing(0)
+        root.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+
+        self._content_frame = QFrame()
+        self._content_frame.setProperty("class", "winamp-panel-frame")
+        self._content_frame.setMaximumWidth(430)
+        self._content_frame.setMaximumHeight(320)
+        self._content_frame.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        content = QVBoxLayout(self._content_frame)
+        content.setContentsMargins(8, 8, 8, 8)
+        content.setSpacing(6)
 
         # ── Top bar: On/Off + Preset ──────────────────────────────────────────
         top = QHBoxLayout()
@@ -175,7 +185,7 @@ class EqualizerPanel(QDockWidget):
         self._enable_cb.toggled.connect(self._on_toggle)
         top.addWidget(self._enable_cb)
 
-        top.addStretch(1)
+        top.addSpacing(18)
 
         preset_lbl = QLabel("Preset:")
         preset_lbl.setStyleSheet(f"color: {ACCENT2};")
@@ -192,7 +202,8 @@ class EqualizerPanel(QDockWidget):
         reset_btn.clicked.connect(self._on_reset)
         top.addWidget(reset_btn)
 
-        root.addLayout(top)
+        top.addStretch(1)
+        content.addLayout(top)
 
         # ── Band sliders ──────────────────────────────────────────────────────
         bands_frame = QFrame()
@@ -238,14 +249,17 @@ class EqualizerPanel(QDockWidget):
 
             bands_layout.addLayout(col)
 
-        bands_scroll = QScrollArea()
-        bands_scroll.setWidgetResizable(False)
-        bands_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        bands_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        bands_scroll.setMinimumHeight(174)
-        bands_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
-        bands_scroll.setWidget(bands_frame)
-        root.addWidget(bands_scroll)
+        self._bands_scroll = QScrollArea()
+        self._bands_scroll.setWidgetResizable(False)
+        self._bands_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._bands_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._bands_scroll.setMinimumHeight(174)
+        self._bands_scroll.setStyleSheet(
+            f"QScrollArea {{ border: 1px solid #05060a; border-right-color: {BORDER}; "
+            f"border-bottom-color: {BORDER}; background: transparent; }}"
+        )
+        self._bands_scroll.setWidget(bands_frame)
+        content.addWidget(self._bands_scroll)
 
         # ── Scope note ────────────────────────────────────────────────────────
         note = QLabel(
@@ -254,7 +268,9 @@ class EqualizerPanel(QDockWidget):
         )
         note.setStyleSheet(f"color: {MUTED}; font-size: 9px;")
         note.setAlignment(Qt.AlignCenter)
-        root.addWidget(note)
+        content.addWidget(note)
+
+        root.addWidget(self._content_frame)
 
         self.setWidget(container)
 

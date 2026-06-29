@@ -25,6 +25,9 @@ class WinampThemeTest(unittest.TestCase):
         self.assertIn("qlineargradient", qss)
         self.assertIn("QSlider::handle:horizontal", qss)
         self.assertIn("QDockWidget::title", qss)
+        self.assertIn("border-right-color: #697084", qss)
+        self.assertIn("border-bottom-color: #697084", qss)
+        self.assertIn('QFrame[class="winamp-panel-frame"]', qss)
         self.assertIn("border-radius: 1px", qss)
         self.assertIn("#f3d94e", qss)
 
@@ -84,5 +87,45 @@ class MixerWinampLayoutTest(unittest.TestCase):
 
         self.assertLessEqual(panel.minimumWidth(), 420)
         self.assertGreaterEqual(panel.minimumHeight(), 220)
+        self.assertLessEqual(panel.maximumHeight(), 260)
         self.assertGreaterEqual(panel._channels_widget.minimumWidth(), 560)
         self.assertGreaterEqual(panel._channels_widget.minimumHeight(), 160)
+
+    def test_mixer_vertical_slider_fill_rises_from_bottom(self):
+        try:
+            from PyQt5.QtCore import Qt
+            from PyQt5.QtWidgets import QApplication, QSlider
+        except ImportError:
+            from PySide6.QtCore import Qt  # type: ignore
+            from PySide6.QtWidgets import QApplication, QSlider  # type: ignore
+
+        from ui.panels.mixer_panel import _apply_slider_style
+
+        app = QApplication.instance() or QApplication([sys.argv[0]])
+        slider = QSlider(Qt.Vertical)
+        _apply_slider_style(slider)
+        qss = slider.styleSheet()
+
+        self.assertIn("QSlider::add-page:vertical", qss)
+        self.assertIn("#f3d94e", qss.split("QSlider::add-page:vertical", 1)[1])
+
+
+class EqualizerWinampLayoutTest(unittest.TestCase):
+    def test_equalizer_uses_compact_framed_content(self):
+        try:
+            from PyQt5.QtWidgets import QApplication
+        except ImportError:
+            from PySide6.QtWidgets import QApplication  # type: ignore
+
+        from core.config import Config
+        from ui.panels.equalizer_panel import EqualizerPanel
+
+        app = QApplication.instance() or QApplication([sys.argv[0]])
+        config = Config(vaults={"TestVault": "GMAssistantVault"}, current_vault="TestVault")
+        panel = EqualizerPanel(config)
+
+        self.assertEqual(panel._content_frame.property("class"), "winamp-panel-frame")
+        self.assertLessEqual(panel._content_frame.maximumWidth(), 430)
+        self.assertLessEqual(panel._content_frame.maximumHeight(), 320)
+        self.assertIn("QScrollArea", panel._bands_scroll.styleSheet())
+        self.assertIn("#697084", panel._bands_scroll.styleSheet())

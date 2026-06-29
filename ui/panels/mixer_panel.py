@@ -47,6 +47,7 @@ from ui.theme import ACCENT, ACCENT2, BG, BORDER, MUTED, TEXT, PANEL, SURFACE, E
 _ASSETS = Path(__file__).resolve().parent.parent / "assets"
 _BASE_MIN_WIDTH = 360
 _BASE_MIN_HEIGHT = 220
+_BASE_MAX_HEIGHT = 260
 _CHANNEL_COLUMN_WIDTH = 76
 _CHANNEL_BANK_HEIGHT = 160
 
@@ -85,6 +86,7 @@ class MixerPanel(QDockWidget):
         super().__init__("VOLUME MIXER", parent)
         self.setObjectName("MixerPanel")
         self.setMinimumSize(_BASE_MIN_WIDTH, _BASE_MIN_HEIGHT)
+        self.setMaximumHeight(_BASE_MAX_HEIGHT)
         self.setAllowedAreas(Qt.DockWidgetArea.AllDockWidgetAreas)  # type: ignore[attr-defined]
         self.setFeatures(
             QDockWidget.DockWidgetFeature.DockWidgetMovable   |  # type: ignore[attr-defined]
@@ -503,7 +505,8 @@ def _apply_slider_style(slider: QSlider) -> None:
         f"  stop:0 #fff3a3, stop:0.45 {ACCENT2}, stop:1 #806713);"
         f"  width: 14px; height: 10px; margin: 0 -5px; border: 1px solid #05060a;"
         f"  border-radius: 1px; }}"
-        f"QSlider::sub-page:vertical {{ background: {ACCENT2}; border-radius: 1px; }}"
+        f"QSlider::sub-page:vertical {{ background: transparent; border-radius: 1px; }}"
+        f"QSlider::add-page:vertical {{ background: {ACCENT2}; border-radius: 1px; }}"
     )
 
 

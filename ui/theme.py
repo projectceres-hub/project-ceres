@@ -52,8 +52,8 @@ QDockWidget {{
     border: 1px solid {SHADOW};
     border-top-color: {CHROME_LITE};
     border-left-color: {CHROME_LITE};
-    border-right-color: {SHADOW};
-    border-bottom-color: {SHADOW};
+    border-right-color: {BORDER};
+    border-bottom-color: {BORDER};
     titlebar-close-icon: none;
     titlebar-normal-icon: none;
 }}
@@ -85,6 +85,17 @@ QSplitter::handle {{
         stop:0 {CHROME_LITE}, stop:0.5 {CHROME_MID}, stop:1 {SHADOW});
     width: 4px;
     height: 4px;
+}}
+
+/* Reusable Winamp panel body frame */
+QFrame[class="winamp-panel-frame"] {{
+    background: {PANEL};
+    border: 1px solid {SHADOW};
+    border-top-color: {CHROME_LITE};
+    border-left-color: {CHROME_LITE};
+    border-right-color: {BORDER};
+    border-bottom-color: {BORDER};
+    border-radius: 1px;
 }}
 
 /* Labels */
