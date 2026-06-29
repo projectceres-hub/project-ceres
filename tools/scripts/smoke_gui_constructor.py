@@ -32,8 +32,10 @@ def main() -> int:
 
     try:
         from PyQt5.QtWidgets import QApplication
+        from PyQt5.QtCore import Qt
     except ImportError:
         from PySide6.QtWidgets import QApplication  # type: ignore
+        from PySide6.QtCore import Qt  # type: ignore
 
     from assistant import initialize_application, register_all_commands, run_command
 
@@ -74,6 +76,21 @@ def main() -> int:
     tool_actions = [action.text().replace("&", "") for action in tools_menu.actions()]
     if "PDF Importer..." not in tool_actions:
         raise AssertionError(f"PDF Importer action missing from Tools menu: {tool_actions}")
+
+    left_docks = [
+        window._chat_dock,
+        window._vault_panel,
+        window._mixer_panel,
+        window._eq_panel,
+    ]
+    for dock in left_docks:
+        if window.dockWidgetArea(dock) != Qt.DockWidgetArea.LeftDockWidgetArea:
+            raise AssertionError(f"{dock.objectName()} is not in the left dock area")
+
+    if window._spotify_panel not in window.tabifiedDockWidgets(window._discord_panel):
+        raise AssertionError("Spotify is no longer tabified with Discord")
+    if window._soundboard_panel not in window.tabifiedDockWidgets(window._spotify_panel):
+        raise AssertionError("Soundboard is no longer in the right-side media tab group")
 
     print("GUI constructor smoke OK.")
     print(f"Registered commands: {len(config.commands)}")

@@ -100,7 +100,7 @@ class MainWindow(QMainWindow):
 
     APP_NAME = "GM Assistant — Project Ceres"
     VERSION  = "0.1.0-scaffold"
-    LAYOUT_STATE_VERSION = 2
+    LAYOUT_STATE_VERSION = 4
 
     def __init__(
         self,
@@ -113,7 +113,7 @@ class MainWindow(QMainWindow):
         self._run_command = run_command
 
         self.setWindowTitle(self.APP_NAME)
-        self.setMinimumSize(QSize(900, 620))
+        self.setMinimumSize(QSize(1100, 900))
         self.resize(QSize(1400, 860))
         self.setDockOptions(
             QMainWindow.DockOption.AnimatedDocks
@@ -136,10 +136,8 @@ class MainWindow(QMainWindow):
 
     def _build_central_widget(self) -> None:
         """
-        Central widget is now a minimal dark placeholder.
-        Ceres Chat lives in a dockable QDockWidget (_chat_dock) built in
-        _build_panels so it can be moved, floated, and toggled like all
-        other panels.
+        Central widget is a minimal dark workspace. It stays empty by default;
+        movable docks can be dropped around it when the GM wants more room.
         """
         placeholder = QWidget()
         placeholder.setStyleSheet(f"QWidget {{ background: {BG}; }}")
@@ -157,6 +155,7 @@ class MainWindow(QMainWindow):
 
         self._chat_dock = QDockWidget("Ceres Chat", self)
         self._chat_dock.setObjectName("CeresChatDock")
+        self._chat_dock.setMinimumSize(QSize(600, 350))
         self._chat_dock.setWidget(self._chat_panel)
         self._chat_dock.setAllowedAreas(
             Qt.DockWidgetArea.LeftDockWidgetArea
@@ -175,6 +174,7 @@ class MainWindow(QMainWindow):
         self._vault_panel.status_message.connect(self._set_status)
         self._vault_panel.note_opened.connect(self._on_note_opened)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self._vault_panel)  # type: ignore[attr-defined]
+        self.splitDockWidget(self._chat_dock, self._vault_panel, Qt.Orientation.Vertical)
 
         # 2. Console — bottom (power-user / raw output; hidden by default)
         self._console_panel = ConsolePanel(self._config, self._run_command, self)
@@ -266,6 +266,7 @@ class MainWindow(QMainWindow):
         self._mixer_panel = MixerPanel(self)
         self._mixer_panel.status_message.connect(self._set_status)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self._mixer_panel)  # type: ignore[attr-defined]
+        self.splitDockWidget(self._chat_dock, self._mixer_panel, Qt.Orientation.Horizontal)
 
         self._mixer_panel.register_source("Soundboard", self._soundboard_panel)
         self._mixer_panel.register_source("Syrinscape", self._syrinscape_panel, "syrinscape.png")
@@ -290,6 +291,7 @@ class MainWindow(QMainWindow):
         self._eq_panel = EqualizerPanel(self._config, self)
         self._eq_panel.status_message.connect(self._set_status)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self._eq_panel)  # type: ignore[attr-defined]
+        self.splitDockWidget(self._mixer_panel, self._eq_panel, Qt.Orientation.Vertical)
 
         self._eq_panel.eq_changed.connect(self._soundboard_panel.set_eq_bands)
         self._eq_panel.eq_changed.connect(self._local_music_panel.set_eq_bands)
@@ -452,6 +454,7 @@ class MainWindow(QMainWindow):
         # ── Modules menu ──
         mod_menu = mb.addMenu("&Modules")
         mod_menu.addAction(self._chat_dock.toggleViewAction())
+        mod_menu.addAction(self._vault_panel.toggleViewAction())
         mod_menu.addAction(self._discord_panel.toggleViewAction())
         mod_menu.addAction(self._spotify_panel.toggleViewAction())
         mod_menu.addAction(self._soundboard_panel.toggleViewAction())
@@ -581,6 +584,11 @@ class MainWindow(QMainWindow):
         """Re-dock everything to default positions."""
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea,   self._chat_dock)        # type: ignore[attr-defined]
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea,   self._vault_panel)      # type: ignore[attr-defined]
+        self.splitDockWidget(self._chat_dock, self._vault_panel, Qt.Orientation.Vertical)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea,   self._mixer_panel)      # type: ignore[attr-defined]
+        self.splitDockWidget(self._chat_dock, self._mixer_panel, Qt.Orientation.Horizontal)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea,   self._eq_panel)         # type: ignore[attr-defined]
+        self.splitDockWidget(self._mixer_panel, self._eq_panel, Qt.Orientation.Vertical)
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self._console_panel)    # type: ignore[attr-defined]
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,  self._discord_panel)     # type: ignore[attr-defined]
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,  self._spotify_panel)     # type: ignore[attr-defined]
@@ -593,7 +601,6 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,  self._tidal_panel)            # type: ignore[attr-defined]
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,  self._local_music_panel)    # type: ignore[attr-defined]
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,  self._now_playing_panel)   # type: ignore[attr-defined]
-        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea,   self._mixer_panel)           # type: ignore[attr-defined]
         self.tabifyDockWidget(self._discord_panel,    self._spotify_panel)
         self.tabifyDockWidget(self._spotify_panel,    self._soundboard_panel)
         self.tabifyDockWidget(self._soundboard_panel, self._fgu_panel)
@@ -604,7 +611,6 @@ class MainWindow(QMainWindow):
         self.tabifyDockWidget(self._youtube_panel,    self._tidal_panel)
         self.tabifyDockWidget(self._tidal_panel,      self._local_music_panel)
         self.tabifyDockWidget(self._local_music_panel, self._now_playing_panel)
-        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea,   self._eq_panel)            # type: ignore[attr-defined]
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,  self._visualiser_panel)  # type: ignore[attr-defined]
         self.tabifyDockWidget(self._now_playing_panel, self._visualiser_panel)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,  self._plex_jellyfin_panel)  # type: ignore[attr-defined]

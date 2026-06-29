@@ -28,7 +28,7 @@ except ImportError:
     )
     from PySide6.QtCore import Qt, QTimer, Signal  # type: ignore
 
-from ui.theme import ACCENT, BG, PANEL, SURFACE, TEXT, MUTED, BORDER
+from ui.theme import ACCENT, ACCENT2, BG, PANEL, SURFACE, TEXT, MUTED, BORDER
 
 # ── Band centre frequencies ────────────────────────────────────────────────────
 BAND_FREQS: Tuple[int, ...] = (32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000)
@@ -176,7 +176,7 @@ class EqualizerPanel(QDockWidget):
         top.addStretch(1)
 
         preset_lbl = QLabel("Preset:")
-        preset_lbl.setStyleSheet(f"color: {MUTED};")
+        preset_lbl.setStyleSheet(f"color: {ACCENT2};")
         top.addWidget(preset_lbl)
 
         self._preset_combo = QComboBox()
@@ -195,8 +195,9 @@ class EqualizerPanel(QDockWidget):
         # ── Band sliders ──────────────────────────────────────────────────────
         bands_frame = QFrame()
         bands_frame.setStyleSheet(
-            f"QFrame {{ background: {SURFACE}; border: 1px solid {BORDER}; "
-            f"border-radius: 4px; padding: 4px; }}"
+            f"QFrame {{ background: #020302; border: 1px solid #05060a; "
+            f"border-right-color: {BORDER}; border-bottom-color: {BORDER}; "
+            f"border-radius: 1px; padding: 4px; }}"
         )
         bands_layout = QHBoxLayout(bands_frame)
         bands_layout.setContentsMargins(4, 4, 4, 4)
@@ -210,7 +211,7 @@ class EqualizerPanel(QDockWidget):
             # dB readout
             db_lbl = QLabel("0.0")
             db_lbl.setAlignment(Qt.AlignCenter)
-            db_lbl.setStyleSheet(f"color: {ACCENT}; font-size: 9px;")
+            db_lbl.setStyleSheet(f"color: {ACCENT2}; font-size: 9px;")
             db_lbl.setFixedWidth(32)
             col.addWidget(db_lbl)
             self._db_labels.append(db_lbl)
@@ -229,7 +230,7 @@ class EqualizerPanel(QDockWidget):
             # Hz label
             hz_lbl = QLabel(freq_label)
             hz_lbl.setAlignment(Qt.AlignCenter)
-            hz_lbl.setStyleSheet(f"color: {MUTED}; font-size: 9px;")
+            hz_lbl.setStyleSheet(f"color: {ACCENT}; font-size: 9px;")
             hz_lbl.setFixedWidth(32)
             col.addWidget(hz_lbl)
 

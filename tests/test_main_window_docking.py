@@ -8,7 +8,7 @@ os.environ.setdefault("QT_OPENGL", "software")
 os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu --disable-software-rasterizer")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 
-from PyQt5.QtWidgets import QApplication, QMainWindow
+from PyQt5.QtWidgets import QApplication, QDockWidget, QMainWindow
 from PyQt5.QtCore import Qt
 
 from core.config import Config
@@ -43,35 +43,124 @@ class MainWindowDockingTests(unittest.TestCase):
             window.close()
 
     def test_stale_saved_dock_state_is_not_restored(self) -> None:
-        self.assertFalse(_should_restore_dock_state(b"old-state", True, 1, 2))
-        self.assertFalse(_should_restore_dock_state(b"old-state", False, 2, 2))
-        self.assertFalse(_should_restore_dock_state(None, True, 2, 2))
-        self.assertTrue(_should_restore_dock_state(b"current-state", True, 2, 2))
+        self.assertEqual(MainWindow.LAYOUT_STATE_VERSION, 4)
+        self.assertFalse(_should_restore_dock_state(b"old-state", True, 3, 4))
+        self.assertFalse(_should_restore_dock_state(b"old-state", False, 4, 4))
+        self.assertFalse(_should_restore_dock_state(None, True, 4, 4))
+        self.assertTrue(_should_restore_dock_state(b"current-state", True, 4, 4))
 
-    def test_equalizer_starts_as_own_left_column_section_not_right_tab(self) -> None:
+    def test_left_tools_are_real_movable_docks(self) -> None:
         window = self._build_window()
         try:
-            self._assert_equalizer_is_left_section(window)
-
-            window._reset_layout()
-
-            self._assert_equalizer_is_left_section(window)
+            left_docks = [
+                window._chat_dock,
+                window._vault_panel,
+                window._mixer_panel,
+                window._eq_panel,
+            ]
+            for dock in left_docks:
+                self.assertEqual(
+                    window.dockWidgetArea(dock),
+                    Qt.DockWidgetArea.LeftDockWidgetArea,
+                )
+                self.assertTrue(
+                    dock.features() & QDockWidget.DockWidgetFeature.DockWidgetMovable
+                )
+                self.assertTrue(
+                    dock.features() & QDockWidget.DockWidgetFeature.DockWidgetFloatable
+                )
         finally:
             window.close()
 
-    def _assert_equalizer_is_left_section(self, window: MainWindow) -> None:
-        self.assertEqual(
-            window.dockWidgetArea(window._eq_panel),
-            Qt.DockWidgetArea.LeftDockWidgetArea,
-        )
-        self.assertNotIn(
-            window._eq_panel,
-            window.tabifiedDockWidgets(window._now_playing_panel),
-        )
-        self.assertNotIn(
-            window._now_playing_panel,
-            window.tabifiedDockWidgets(window._eq_panel),
-        )
+    def test_left_dock_columns_keep_readable_minimum_sizes(self) -> None:
+        window = self._build_window()
+        try:
+            self.assertGreaterEqual(window.minimumHeight(), 900)
+            self.assertGreaterEqual(window._chat_dock.minimumHeight(), 350)
+            self.assertGreaterEqual(window._chat_panel.minimumHeight(), 320)
+            self.assertGreaterEqual(window._vault_panel.minimumHeight(), 260)
+            self.assertGreaterEqual(window._vault_panel.widget().minimumHeight(), 230)
+            self.assertGreaterEqual(window._mixer_panel.minimumHeight(), 380)
+        finally:
+            window.close()
+
+    def test_left_tool_toggle_actions_show_and_hide_docks(self) -> None:
+        window = self._build_window()
+        try:
+            window.show()
+            self.app.processEvents()
+
+            action = window._mixer_panel.toggleViewAction()
+            self.assertTrue(action.isCheckable())
+            self.assertTrue(window._mixer_panel.isVisible())
+
+            action.trigger()
+            self.app.processEvents()
+
+            self.assertFalse(window._mixer_panel.isVisible())
+
+            action.trigger()
+            self.app.processEvents()
+
+            self.assertTrue(window._mixer_panel.isVisible())
+        finally:
+            window.close()
+
+    def test_default_left_layout_spills_into_second_column(self) -> None:
+        window = self._build_window()
+        try:
+            window.resize(1400, 900)
+            window.show()
+            self.app.processEvents()
+
+            self.assertGreater(
+                window._mixer_panel.geometry().x(),
+                window._chat_dock.geometry().x(),
+            )
+            self.assertGreater(
+                window._eq_panel.geometry().x(),
+                window._vault_panel.geometry().x(),
+            )
+        finally:
+            window.close()
+
+    def test_right_side_docks_remain_tabified(self) -> None:
+        window = self._build_window()
+        try:
+            self.assertIn(
+                window._spotify_panel,
+                window.tabifiedDockWidgets(window._discord_panel),
+            )
+            self.assertIn(
+                window._soundboard_panel,
+                window.tabifiedDockWidgets(window._spotify_panel),
+            )
+            self.assertEqual(
+                window.dockWidgetArea(window._discord_panel),
+                Qt.DockWidgetArea.RightDockWidgetArea,
+            )
+            self.assertEqual(
+                window.dockWidgetArea(window._mixer_panel),
+                Qt.DockWidgetArea.LeftDockWidgetArea,
+            )
+        finally:
+            window.close()
+
+    def test_reset_layout_keeps_equalizer_out_of_right_tabs(self) -> None:
+        window = self._build_window()
+        try:
+            window._reset_layout()
+
+            self.assertNotIn(
+                window._eq_panel,
+                window.tabifiedDockWidgets(window._now_playing_panel),
+            )
+            self.assertNotIn(
+                window._now_playing_panel,
+                window.tabifiedDockWidgets(window._eq_panel),
+            )
+        finally:
+            window.close()
 
 
 if __name__ == "__main__":

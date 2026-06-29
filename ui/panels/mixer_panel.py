@@ -42,9 +42,13 @@ except ImportError:
     from PySide6.QtCore import Qt, QSize, QSettings, Signal, Slot  # type: ignore
     from PySide6.QtGui import QFont, QIcon, QPixmap  # type: ignore
 
-from ui.theme import ACCENT, BG, BORDER, MUTED, TEXT, PANEL, SURFACE, ERROR
+from ui.theme import ACCENT, ACCENT2, BG, BORDER, MUTED, TEXT, PANEL, SURFACE, ERROR
 
 _ASSETS = Path(__file__).resolve().parent.parent / "assets"
+_BASE_MIN_WIDTH = 600
+_BASE_MIN_HEIGHT = 380
+_CHANNEL_COLUMN_WIDTH = 76
+_CHANNEL_BANK_HEIGHT = 160
 
 
 @dataclass
@@ -78,8 +82,9 @@ class MixerPanel(QDockWidget):
     status_message: Signal = Signal(str)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
-        super().__init__("🎚  MIXER", parent)
+        super().__init__("VOLUME MIXER", parent)
         self.setObjectName("MixerPanel")
+        self.setMinimumSize(_BASE_MIN_WIDTH, _BASE_MIN_HEIGHT)
         self.setAllowedAreas(Qt.DockWidgetArea.AllDockWidgetAreas)  # type: ignore[attr-defined]
         self.setFeatures(
             QDockWidget.DockWidgetFeature.DockWidgetMovable   |  # type: ignore[attr-defined]
@@ -105,6 +110,7 @@ class MixerPanel(QDockWidget):
 
     def _build_ui(self) -> None:
         outer = QWidget()
+        outer.setMinimumSize(_BASE_MIN_WIDTH - 12, _BASE_MIN_HEIGHT - 34)
         outer_layout = QVBoxLayout(outer)
         outer_layout.setContentsMargins(6, 6, 6, 6)
         outer_layout.setSpacing(4)
@@ -113,9 +119,15 @@ class MixerPanel(QDockWidget):
         top_bar = QHBoxLayout()
         top_bar.setSpacing(6)
 
-        title_lbl = QLabel("Volume Mixer")
+        title_lbl = QLabel("VOLUME MIXER")
+        title_lbl.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter  # type: ignore[attr-defined]
+        )
+        title_lbl.setMinimumHeight(24)
+        title_lbl.setMinimumWidth(170)
         title_lbl.setStyleSheet(
-            f"color: {ACCENT}; font-weight: bold; font-size: 10px;"
+            f"background: transparent; color: {ACCENT2}; font-weight: bold; font-size: 14px;"
+            f"border: none; padding: 2px 8px;"
         )
         top_bar.addWidget(title_lbl, 1)
 
@@ -124,10 +136,11 @@ class MixerPanel(QDockWidget):
         reset_btn.setToolTip("Set all channels to 80, master to 100, unmute all")
         reset_btn.clicked.connect(self._reset_all)
         reset_btn.setStyleSheet(
-            f"QPushButton {{ background: {SURFACE}; color: {MUTED}; font-size: 9px;"
-            f"  border: 1px solid {BORDER}; border-radius: 3px; padding: 1px 8px; }}"
-            f"QPushButton:hover {{ border-color: {ACCENT}; color: {ACCENT}; }}"
-            f"QPushButton:pressed {{ background: {PANEL}; }}"
+            f"QPushButton {{ background: {SURFACE}; color: #10131b; font-size: 9px;"
+            f"  border: 1px solid #05060a; border-top-color: #d6dfef;"
+            f"  border-left-color: #d6dfef; border-radius: 1px; padding: 1px 8px; }}"
+            f"QPushButton:hover {{ border-color: {ACCENT2}; color: #050608; }}"
+            f"QPushButton:pressed {{ background: {PANEL}; color: {ACCENT2}; }}"
         )
         top_bar.addWidget(reset_btn)
         outer_layout.addLayout(top_bar)
@@ -136,58 +149,67 @@ class MixerPanel(QDockWidget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)  # type: ignore[attr-defined]
+        scroll.setMinimumHeight(_CHANNEL_BANK_HEIGHT + 12)
         scroll.setStyleSheet(f"background: {PANEL}; border: none;")
 
         self._channels_widget = QWidget()
-        self._channels_layout = QVBoxLayout(self._channels_widget)
-        self._channels_layout.setContentsMargins(0, 0, 0, 0)
-        self._channels_layout.setSpacing(2)
+        self._channels_widget.setMinimumHeight(_CHANNEL_BANK_HEIGHT)
+        self._channels_layout = QHBoxLayout(self._channels_widget)
+        self._channels_layout.setContentsMargins(2, 2, 2, 2)
+        self._channels_layout.setSpacing(4)
+        self._channels_layout.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop  # type: ignore[attr-defined]
+        )
         self._channels_layout.addStretch()
+        self._channels_layout.insertWidget(0, self._build_master_column())
 
         scroll.setWidget(self._channels_widget)
         outer_layout.addWidget(scroll, 1)
 
         # ── Visual separator ──
-        sep = QFrame()
-        sep.setFrameShape(QFrame.Shape.HLine)  # type: ignore[attr-defined]
-        sep.setStyleSheet(f"color: {BORDER};")
-        outer_layout.addWidget(sep)
+        
 
         # ── Master row (always at the bottom) ──
-        outer_layout.addWidget(self._build_master_row())
+        
 
         self.setWidget(outer)
 
-    def _build_master_row(self) -> QWidget:
-        """Build the always-present MASTER row."""
+    def _build_master_column(self) -> QWidget:
+        """Build the always-present MASTER fader column."""
         frame = QFrame()
         frame.setStyleSheet(
-            f"QFrame {{ background: {SURFACE}; border: 1px solid {BORDER};"
-            f"  border-radius: 3px; }}"
+            f"QFrame {{ background: {SURFACE}; border: 1px solid #05060a;"
+            f"  border-top-color: #8d96aa; border-left-color: #8d96aa;"
+            f"  border-radius: 1px; }}"
         )
-        row = QHBoxLayout(frame)
-        row.setContentsMargins(8, 5, 8, 5)
-        row.setSpacing(6)
+        frame.setFixedSize(_CHANNEL_COLUMN_WIDTH, 154)
+        row = QVBoxLayout(frame)
+        row.setContentsMargins(5, 5, 5, 5)
+        row.setSpacing(3)
+        row.setAlignment(Qt.AlignmentFlag.AlignHCenter)  # type: ignore[attr-defined]
 
         master_lbl = QLabel("MASTER")
-        master_lbl.setFixedWidth(90)
+        master_lbl.setFixedWidth(58)
+        master_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)  # type: ignore[attr-defined]
         master_lbl.setStyleSheet(
             f"color: {ACCENT}; font-weight: bold; font-size: 10px;"
         )
         row.addWidget(master_lbl)
 
-        self._master_slider = QSlider(Qt.Orientation.Horizontal)  # type: ignore[attr-defined]
+        self._master_slider = QSlider(Qt.Orientation.Vertical)  # type: ignore[attr-defined]
         self._master_slider.setRange(0, 100)
         self._master_slider.setValue(100)
+        self._master_slider.setFixedHeight(108)
+        self._master_slider.setFixedWidth(24)
         self._master_slider.setToolTip("Master volume — scales all channel outputs")
         self._master_slider.valueChanged.connect(self._on_master_changed)
         _apply_slider_style(self._master_slider)
-        row.addWidget(self._master_slider, 1)
+        row.addWidget(self._master_slider, 1, Qt.AlignmentFlag.AlignHCenter)  # type: ignore[attr-defined]
 
         self._master_val_label = QLabel("100")
         self._master_val_label.setFixedWidth(28)
         self._master_val_label.setAlignment(
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter  # type: ignore[attr-defined]
+            Qt.AlignmentFlag.AlignCenter  # type: ignore[attr-defined]
         )
         self._master_val_label.setStyleSheet(f"color: {TEXT}; font-size: 10px;")
         row.addWidget(self._master_val_label)
@@ -197,7 +219,7 @@ class MixerPanel(QDockWidget):
         self._master_mute_btn.setToolTip("Mute / unmute all channels")
         self._master_mute_btn.clicked.connect(self._on_master_mute_clicked)
         _apply_mute_btn_style(self._master_mute_btn, muted=False)
-        row.addWidget(self._master_mute_btn)
+        row.addWidget(self._master_mute_btn, 0, Qt.AlignmentFlag.AlignHCenter)  # type: ignore[attr-defined]
 
         return frame
 
@@ -205,12 +227,15 @@ class MixerPanel(QDockWidget):
         """Build a single source channel row widget from a _ChannelState."""
         frame = QFrame()
         frame.setStyleSheet(
-            f"QFrame {{ background: {PANEL}; border: 1px solid {BORDER};"
-            f"  border-radius: 3px; }}"
+            f"QFrame {{ background: #050608; border: 1px solid #05060a;"
+            f"  border-right-color: {BORDER}; border-bottom-color: {BORDER};"
+            f"  border-radius: 1px; }}"
         )
-        row = QHBoxLayout(frame)
-        row.setContentsMargins(8, 4, 8, 4)
-        row.setSpacing(6)
+        frame.setFixedSize(76 if state.icon_file else 66, 154)
+        row = QVBoxLayout(frame)
+        row.setContentsMargins(5, 5, 5, 5)
+        row.setSpacing(3)
+        row.setAlignment(Qt.AlignmentFlag.AlignHCenter)  # type: ignore[attr-defined]
 
         if state.icon_file:
             icon_path = _ASSETS / state.icon_file
@@ -223,20 +248,21 @@ class MixerPanel(QDockWidget):
                 icon_lbl.setPixmap(pm)
                 icon_lbl.setFixedSize(16, 16)
                 icon_lbl.setStyleSheet("background: transparent; border: none;")
-                row.addWidget(icon_lbl)
+                row.addWidget(icon_lbl, 0, Qt.AlignmentFlag.AlignHCenter)  # type: ignore[attr-defined]
 
         name_lbl = QLabel(state.name)
-        name_lbl.setFixedWidth(74 if state.icon_file else 90)
+        name_lbl.setFixedWidth(58)
+        name_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)  # type: ignore[attr-defined]
         name_lbl.setStyleSheet(f"color: {TEXT}; font-size: 10px;")
         name_lbl.setToolTip(state.name)
         row.addWidget(name_lbl)
 
         _apply_slider_style(state.slider)
-        row.addWidget(state.slider, 1)
+        row.addWidget(state.slider, 1, Qt.AlignmentFlag.AlignHCenter)  # type: ignore[attr-defined]
 
-        state.value_label.setFixedWidth(28)
+        state.value_label.setFixedWidth(36)
         state.value_label.setAlignment(
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter  # type: ignore[attr-defined]
+            Qt.AlignmentFlag.AlignCenter  # type: ignore[attr-defined]
         )
         state.value_label.setStyleSheet(f"color: {TEXT}; font-size: 10px;")
         row.addWidget(state.value_label)
@@ -266,9 +292,11 @@ class MixerPanel(QDockWidget):
         saved_vol = self._settings.value(f"mixer/{key}/volume", 80, type=int)
         saved_muted = self._settings.value(f"mixer/{key}/muted", False, type=bool)
 
-        slider = QSlider(Qt.Orientation.Horizontal)  # type: ignore[attr-defined]
+        slider = QSlider(Qt.Orientation.Vertical)  # type: ignore[attr-defined]
         slider.setRange(0, 100)
         slider.setValue(saved_vol)
+        slider.setFixedHeight(86)
+        slider.setFixedWidth(22)
         slider.setToolTip(name)
 
         val_label = QLabel(str(saved_vol))
@@ -300,6 +328,7 @@ class MixerPanel(QDockWidget):
         state.row_widget = row_widget
         count = self._channels_layout.count()
         self._channels_layout.insertWidget(count - 1, row_widget)
+        self._resize_for_channel_count()
 
         # Track panel on/off state — hide mixer row when panel is disabled
         # via the Modules/View menu or closed with the X button.
@@ -312,6 +341,16 @@ class MixerPanel(QDockWidget):
                 row_widget.hide()
 
         self._send_effective_volume(key)
+
+    def _resize_for_channel_count(self) -> None:
+        """Reserve enough dock space for the full vertical fader bank."""
+        count = len(self._channels) + 1
+        bank_width = max(
+            _BASE_MIN_WIDTH - 24,
+            count * _CHANNEL_COLUMN_WIDTH + max(0, count - 1) * 4 + 8,
+        )
+        self._channels_widget.setMinimumSize(bank_width, _CHANNEL_BANK_HEIGHT)
+        self.setMinimumSize(max(_BASE_MIN_WIDTH, bank_width + 24), _BASE_MIN_HEIGHT)
 
     # ══════════════════════════════════════════════════════════════════════════
     # Channel event handlers
@@ -449,11 +488,22 @@ class MixerPanel(QDockWidget):
 
 def _apply_slider_style(slider: QSlider) -> None:
     slider.setStyleSheet(
-        f"QSlider::groove:horizontal {{ background: {BORDER}; height: 4px;"
-        f"  border-radius: 2px; }}"
-        f"QSlider::handle:horizontal {{ background: {ACCENT}; width: 12px; height: 12px;"
-        f"  margin: -4px 0; border-radius: 6px; }}"
-        f"QSlider::sub-page:horizontal {{ background: {ACCENT}; border-radius: 2px; }}"
+        f"QSlider::groove:horizontal {{ background: #020302; height: 5px;"
+        f"  border: 1px solid #05060a; border-right-color: {BORDER};"
+        f"  border-bottom-color: {BORDER}; border-radius: 1px; }}"
+        f"QSlider::handle:horizontal {{ background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
+        f"  stop:0 #fff3a3, stop:0.45 {ACCENT2}, stop:1 #806713);"
+        f"  width: 12px; height: 12px; margin: -5px 0; border: 1px solid #05060a;"
+        f"  border-radius: 1px; }}"
+        f"QSlider::sub-page:horizontal {{ background: {ACCENT2}; border-radius: 1px; }}"
+        f"QSlider::groove:vertical {{ background: #020302; width: 5px;"
+        f"  border: 1px solid #05060a; border-right-color: {BORDER};"
+        f"  border-bottom-color: {BORDER}; border-radius: 1px; }}"
+        f"QSlider::handle:vertical {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:0,"
+        f"  stop:0 #fff3a3, stop:0.45 {ACCENT2}, stop:1 #806713);"
+        f"  width: 14px; height: 10px; margin: 0 -5px; border: 1px solid #05060a;"
+        f"  border-radius: 1px; }}"
+        f"QSlider::sub-page:vertical {{ background: {ACCENT2}; border-radius: 1px; }}"
     )
 
 
@@ -462,13 +512,14 @@ def _apply_mute_btn_style(btn: QPushButton, *, muted: bool) -> None:
         btn.setText("🔇")
         btn.setStyleSheet(
             f"QPushButton {{ background: {ERROR}; color: white; font-size: 11px;"
-            f"  border: none; border-radius: 3px; }}"
-            f"QPushButton:hover {{ background: #cc3333; }}"
+            f"  border: 1px solid #05060a; border-radius: 1px; }}"
+            f"QPushButton:hover {{ background: #cc3333; color: {ACCENT2}; }}"
         )
     else:
         btn.setText("🔊")
         btn.setStyleSheet(
             f"QPushButton {{ background: {SURFACE}; color: {MUTED}; font-size: 11px;"
-            f"  border: 1px solid {BORDER}; border-radius: 3px; }}"
-            f"QPushButton:hover {{ border-color: {ACCENT}; color: {ACCENT}; }}"
+            f"  border: 1px solid #05060a; border-top-color: #d6dfef;"
+            f"  border-left-color: #d6dfef; border-radius: 1px; }}"
+            f"QPushButton:hover {{ border-color: {ACCENT2}; color: {ACCENT}; }}"
         )

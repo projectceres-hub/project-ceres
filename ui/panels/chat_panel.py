@@ -59,7 +59,7 @@ except ImportError:
     from PySide6.QtCore import Qt, QThread, QObject, Signal, Slot, QTimer  # type: ignore
     from PySide6.QtGui import QFont  # type: ignore
 
-from ui.theme import ACCENT, BG, PANEL, SURFACE, TEXT, MUTED, BORDER, SUCCESS
+from ui.theme import ACCENT, ACCENT2, BG, PANEL, SURFACE, TEXT, MUTED, BORDER, SUCCESS
 from pantheon.convector.chat_agent import ChatAgent, ChatResponse
 
 
@@ -163,7 +163,7 @@ class _Bubble(QFrame):
             avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
             avatar.setStyleSheet(
                 f"color: {ACCENT}; font-size: 12px;"
-                f"background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 13px;"
+                f"background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 1px;"
                 f"padding: 0;"
             )
             row.addWidget(avatar, 0, Qt.AlignmentFlag.AlignTop)
@@ -194,15 +194,16 @@ class _Bubble(QFrame):
         if is_user:
             lbl.setStyleSheet(
                 f"background: {SURFACE}; color: {TEXT};"
-                f"border: 1px solid {BORDER}; border-radius: 8px 8px 2px 8px;"
-                f"padding: 8px 14px; font-size: 11px; font-family: sans-serif;"
+                f"border: 1px solid {BORDER}; border-top-color: #8d96aa; border-left-color: #8d96aa;"
+                f"border-right-color: #05060a; border-bottom-color: #05060a; border-radius: 1px;"
+                f"padding: 7px 12px; font-size: 11px; font-family: Consolas, monospace;"
             )
         else:
             lbl.setStyleSheet(
                 f"background: {PANEL}; color: {TEXT};"
-                f"border: 1px solid {BORDER}; border-left: 2px solid {ACCENT};"
-                f"border-radius: 8px 8px 8px 2px;"
-                f"padding: 8px 14px; font-size: 11px; font-family: sans-serif;"
+                f"border: 1px solid {BORDER}; border-left: 3px solid {ACCENT2};"
+                f"border-radius: 1px;"
+                f"padding: 7px 12px; font-size: 11px; font-family: Consolas, monospace;"
             )
         return lbl
 
@@ -288,6 +289,7 @@ class ChatPanel(QWidget):
         self._worker: Optional[_ChatWorker]  = None
 
         self.setObjectName("ChatPanel")
+        self.setMinimumSize(600, 320)
         self._build_ui()
         self._post_welcome()
 
@@ -304,8 +306,9 @@ class ChatPanel(QWidget):
         header.setFixedHeight(64)
         header.setStyleSheet(
             f"QFrame#ChatHeader {{"
-            f"  background: {SURFACE};"
-            f"  border-bottom: 2px solid {ACCENT};"
+            f"  background: qlineargradient(x1:0, y1:0, x2:1, y2:0,"
+            f"    stop:0 #151b33, stop:0.5 #4b5f95, stop:1 #111522);"
+            f"  border-bottom: 2px solid {ACCENT2};"
             f"}}"
         )
         hlay = QHBoxLayout(header)
@@ -342,9 +345,9 @@ class ChatPanel(QWidget):
         clear_btn = QPushButton("↺  New session")
         clear_btn.setFixedHeight(28)
         clear_btn.setStyleSheet(
-            f"QPushButton {{ background: transparent; color: {MUTED};"
-            f"  border: 1px solid {BORDER}; border-radius: 4px; font-size: 9px; padding: 4px 10px; }}"
-            f"QPushButton:hover {{ color: {TEXT}; border-color: {ACCENT}; }}"
+            f"QPushButton {{ background: #11131b; color: {MUTED};"
+            f"  border: 1px solid {BORDER}; border-radius: 1px; font-size: 9px; padding: 4px 10px; }}"
+            f"QPushButton:hover {{ color: {ACCENT2}; border-color: {ACCENT2}; }}"
         )
         clear_btn.setToolTip("Clear conversation history")
         clear_btn.clicked.connect(self._on_clear)
@@ -354,13 +357,14 @@ class ChatPanel(QWidget):
 
         # ── Message history (scrollable) ──────────────────────────────────────
         self._scroll = QScrollArea()
+        self._scroll.setMinimumHeight(110)
         self._scroll.setWidgetResizable(True)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._scroll.setStyleSheet(
             f"QScrollArea {{ background: {BG}; border: none; }}"
             f"QScrollBar:vertical {{ background: {BG}; width: 8px; margin: 0; }}"
-            f"QScrollBar::handle:vertical {{ background: {BORDER}; border-radius: 4px; min-height: 24px; }}"
-            f"QScrollBar::handle:vertical:hover {{ background: {ACCENT}; }}"
+            f"QScrollBar::handle:vertical {{ background: {BORDER}; border-radius: 1px; min-height: 24px; }}"
+            f"QScrollBar::handle:vertical:hover {{ background: {ACCENT2}; }}"
             f"QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}"
         )
 
@@ -385,7 +389,8 @@ class ChatPanel(QWidget):
         bar.setFixedHeight(56)
         bar.setStyleSheet(
             f"QFrame#ChatBar {{"
-            f"  background: {PANEL};"
+            f"  background: qlineargradient(x1:0, y1:0, x2:1, y2:0,"
+            f"    stop:0 #11131b, stop:0.5 #30384c, stop:1 #11131b);"
             f"  border-top: 1px solid {BORDER};"
             f"}}"
         )
@@ -399,11 +404,11 @@ class ChatPanel(QWidget):
         )
         self._input.setStyleSheet(
             f"QLineEdit {{"
-            f"  background: {SURFACE}; color: {TEXT};"
-            f"  border: 1px solid {BORDER}; border-radius: 4px;"
-            f"  padding: 6px 12px; font-size: 11px; font-family: sans-serif;"
+            f"  background: #020302; color: {TEXT};"
+            f"  border: 1px solid #05060a; border-right-color: {BORDER}; border-bottom-color: {BORDER}; border-radius: 1px;"
+            f"  padding: 6px 12px; font-size: 11px; font-family: Consolas, monospace;"
             f"}}"
-            f"QLineEdit:focus {{ border-color: {ACCENT}; }}"
+            f"QLineEdit:focus {{ border-color: {ACCENT2}; }}"
             f"QLineEdit:disabled {{ background: {BG}; color: {MUTED}; }}"
         )
         self._input.returnPressed.connect(self._on_send)
@@ -413,12 +418,13 @@ class ChatPanel(QWidget):
         self._send_btn.setFixedSize(72, 36)
         self._send_btn.setStyleSheet(
             f"QPushButton {{"
-            f"  background: {ACCENT}; color: white;"
-            f"  border: none; border-radius: 4px;"
+            f"  background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
+            f"    stop:0 #fff3a3, stop:0.48 {ACCENT2}, stop:1 #806713); color: #050608;"
+            f"  border: 1px solid #05060a; border-radius: 1px;"
             f"  font-size: 11px; font-weight: bold;"
             f"}}"
-            f"QPushButton:hover {{ background: #ff6b7a; }}"
-            f"QPushButton:pressed {{ background: #c73050; }}"
+            f"QPushButton:hover {{ background: #fff172; }}"
+            f"QPushButton:pressed {{ background: #806713; color: {ACCENT}; }}"
             f"QPushButton:disabled {{ background: {BORDER}; color: {MUTED}; }}"
         )
         self._send_btn.clicked.connect(self._on_send)
