@@ -88,7 +88,7 @@ class _SceneEditDialog(QDialog):
 
     def __init__(self, scene: Dict[str, Any], parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Edit Master Scene")
+        self.setWindowTitle("Edit Campaign Scene")
         self.setModal(True)
         self._scene: Dict[str, Any] = {}
 
@@ -164,7 +164,7 @@ class MasterScenePanel(QDockWidget):
             config: Application config used for active-vault scene storage.
             parent: Optional Qt parent widget.
         """
-        super().__init__("Master Scenes", parent)
+        super().__init__("Campaign Scenes", parent)
         self.setObjectName("MasterScenePanel")
         self.setAllowedAreas(Qt.DockWidgetArea.AllDockWidgetAreas)  # type: ignore[attr-defined]
         self.setFeatures(

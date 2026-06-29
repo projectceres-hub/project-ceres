@@ -158,6 +158,31 @@ class MainWindowDockingTests(unittest.TestCase):
         finally:
             window.close()
 
+    def test_campaign_scenes_are_embedded_in_audio_console(self) -> None:
+        window = self._build_window()
+        try:
+            self.assertEqual(window._soundboard_panel.windowTitle(), "Audio Console")
+            self.assertIs(
+                window._master_scene_panel,
+                window._soundboard_panel.campaign_scene_handler(),
+            )
+            self.assertEqual(window._master_scene_panel.windowTitle(), "Campaign Scenes")
+            self.assertNotIn(
+                window._master_scene_panel,
+                window.tabifiedDockWidgets(window._plex_jellyfin_panel),
+            )
+
+            view_menu = next(
+                action.menu()
+                for action in window.menuBar().actions()
+                if action.text().replace("&", "") == "View"
+            )
+            view_action_texts = [action.text() for action in view_menu.actions()]
+            self.assertIn("Audio Console", view_action_texts)
+            self.assertNotIn("Master Scenes", view_action_texts)
+        finally:
+            window.close()
+
     def test_modules_menu_keeps_browser_label_when_default_page_title_changes(self) -> None:
         window = self._build_window()
         try:

@@ -1,0 +1,120 @@
+<h2>Combined Soundboard + Scenes Direction</h2>
+<p class="subtitle">Three possible ways to make Project Ceres feel closer to Syrinscape while keeping the current Qt dock model.</p>
+
+<div class="cards">
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="background:#0d1115;border:1px solid #263241;border-radius:6px;height:260px;display:grid;grid-template-columns:170px 1fr 230px;gap:0;overflow:hidden;color:#d8e2e8;font-family:system-ui,sans-serif;">
+        <div style="background:#1b2027;border-right:1px solid #344150;padding:10px;">
+          <div style="font-size:11px;color:#8e9aa4;text-transform:uppercase;margin-bottom:8px;">Soundsets</div>
+          <div style="height:24px;background:#2a3037;border-radius:4px;margin-bottom:10px;"></div>
+          <div style="display:grid;gap:8px;font-size:12px;color:#b8c0c8;">
+            <div>Ambience</div><div>Combat</div><div>Stingers</div><div>Voice</div><div>Dungeon</div><div>Weather</div>
+          </div>
+        </div>
+        <div style="padding:12px;background:radial-gradient(circle at 70% 30%, #173648, #101821 55%, #0c1015);">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+            <div style="font-weight:700;font-size:16px;">Elements</div>
+            <div style="font-size:11px;color:#7e8992;">small medium large</div>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;">
+            <div style="text-align:center;"><div style="width:42px;height:42px;border-radius:50%;background:#5d3e22;margin:auto;border:2px solid #b87935;"></div><div style="font-size:10px;margin-top:5px;background:#222932;border-radius:3px;padding:3px;">Arrow hit</div></div>
+            <div style="text-align:center;"><div style="width:42px;height:42px;border-radius:50%;background:#223e5d;margin:auto;border:2px solid #28bde8;"></div><div style="font-size:10px;margin-top:5px;background:#222932;border-radius:3px;padding:3px;">Thunder</div></div>
+            <div style="text-align:center;"><div style="width:42px;height:42px;border-radius:50%;background:#4a2924;margin:auto;border:2px solid #d68457;"></div><div style="font-size:10px;margin-top:5px;background:#222932;border-radius:3px;padding:3px;">Impact</div></div>
+            <div style="text-align:center;"><div style="width:42px;height:42px;border-radius:50%;background:#204c4f;margin:auto;border:2px solid #1cc7dc;"></div><div style="font-size:10px;margin-top:5px;background:#159ac0;border-radius:3px;padding:3px;">Victory</div></div>
+          </div>
+        </div>
+        <div style="background:#20242a;border-left:1px solid #344150;padding:10px;">
+          <div style="font-size:11px;color:#8e9aa4;text-transform:uppercase;margin-bottom:8px;">Scenes</div>
+          <div style="display:grid;gap:8px;font-size:11px;">
+            <div style="border-bottom:1px solid #39434d;padding-bottom:6px;">Witchwood</div>
+            <div style="border-bottom:1px solid #39434d;padding-bottom:6px;">Lost Mine</div>
+            <div style="border-bottom:1px solid #39434d;padding-bottom:6px;">Bugbear battle</div>
+            <div style="border-bottom:1px solid #39434d;padding-bottom:6px;">Elven Vale Night</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A. Syrinscape-Style Three Pane</h3>
+      <p>Left category list, center element buttons, right scene/master-scene list. Best visual match to the reference and easiest to scan during play.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="background:#11151b;border:1px solid #2b3542;border-radius:6px;height:260px;color:#d8e2e8;font-family:system-ui,sans-serif;display:flex;flex-direction:column;overflow:hidden;">
+        <div style="height:42px;background:#19212b;border-bottom:1px solid #344150;display:flex;align-items:center;gap:12px;padding:0 12px;">
+          <div style="font-weight:700;">Soundboard</div>
+          <div style="height:20px;width:70px;background:#27313c;border-radius:10px;"></div>
+          <div style="height:20px;width:70px;background:#1a9ec2;border-radius:10px;"></div>
+          <div style="margin-left:auto;font-size:11px;color:#9ba6af;">Stop All</div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 250px;gap:0;flex:1;">
+          <div style="padding:12px;background:#0e141b;">
+            <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;">
+              <div style="height:52px;background:#202a34;border:1px solid #385066;border-radius:5px;"></div>
+              <div style="height:52px;background:#202a34;border:1px solid #385066;border-radius:5px;"></div>
+              <div style="height:52px;background:#202a34;border:1px solid #385066;border-radius:5px;"></div>
+              <div style="height:52px;background:#202a34;border:1px solid #385066;border-radius:5px;"></div>
+              <div style="height:52px;background:#202a34;border:1px solid #385066;border-radius:5px;"></div>
+              <div style="height:52px;background:#202a34;border:1px solid #385066;border-radius:5px;"></div>
+              <div style="height:52px;background:#202a34;border:1px solid #385066;border-radius:5px;"></div>
+              <div style="height:52px;background:#159ac0;border:1px solid #42d7f2;border-radius:5px;"></div>
+            </div>
+          </div>
+          <div style="background:#1d242c;border-left:1px solid #344150;padding:10px;">
+            <div style="font-size:12px;font-weight:700;margin-bottom:8px;">Scene Builder</div>
+            <div style="height:28px;background:#27313c;border-radius:4px;margin-bottom:8px;"></div>
+            <div style="height:28px;background:#27313c;border-radius:4px;margin-bottom:8px;"></div>
+            <div style="height:28px;background:#27313c;border-radius:4px;margin-bottom:8px;"></div>
+            <div style="height:28px;background:#0f8bad;border-radius:4px;margin-top:12px;"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B. Single Panel With Builder Drawer</h3>
+      <p>Sounds stay primary; a right drawer edits the selected scene. Cleaner than today, but less like Syrinscape's browser-and-results layout.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="background:#0f1419;border:1px solid #2c3744;border-radius:6px;height:260px;color:#d8e2e8;font-family:system-ui,sans-serif;display:grid;grid-template-columns:210px 1fr;overflow:hidden;">
+        <div style="background:#1d252e;border-right:1px solid #344150;padding:10px;">
+          <div style="font-size:11px;color:#8e9aa4;text-transform:uppercase;margin-bottom:8px;">Scene Launcher</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+            <div style="height:52px;background:#159ac0;border-radius:5px;"></div>
+            <div style="height:52px;background:#283440;border-radius:5px;"></div>
+            <div style="height:52px;background:#283440;border-radius:5px;"></div>
+            <div style="height:52px;background:#283440;border-radius:5px;"></div>
+            <div style="height:52px;background:#283440;border-radius:5px;"></div>
+            <div style="height:52px;background:#283440;border-radius:5px;"></div>
+          </div>
+        </div>
+        <div style="padding:12px;background:linear-gradient(135deg,#101821,#17212b);">
+          <div style="font-size:14px;font-weight:700;margin-bottom:12px;">Active Scene: Bugbear battle</div>
+          <div style="display:grid;gap:8px;">
+            <div style="height:34px;background:#24303a;border-radius:4px;"></div>
+            <div style="height:34px;background:#24303a;border-radius:4px;"></div>
+            <div style="height:34px;background:#24303a;border-radius:4px;"></div>
+            <div style="height:34px;background:#24303a;border-radius:4px;"></div>
+          </div>
+          <div style="margin-top:12px;display:grid;grid-template-columns:repeat(4,1fr);gap:8px;">
+            <div style="height:38px;background:#202a34;border-radius:4px;"></div>
+            <div style="height:38px;background:#202a34;border-radius:4px;"></div>
+            <div style="height:38px;background:#202a34;border-radius:4px;"></div>
+            <div style="height:38px;background:#202a34;border-radius:4px;"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>C. Scene-First Control Desk</h3>
+      <p>Scenes become the main workflow, with sounds used as ingredients below. Strong for prep and live cueing, but it makes one-shot sound effects less immediate.</p>
+    </div>
+  </div>
+</div>
+
+<p class="subtitle">Click the direction that feels closest to what you meant by "similar to Syrinscape", then tell me any tweaks in chat.</p>

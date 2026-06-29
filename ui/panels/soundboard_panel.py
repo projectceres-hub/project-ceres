@@ -50,7 +50,7 @@ except ImportError:
     from PySide6.QtCore import Qt, QTimer, QSettings, QSize, Signal, Slot  # type: ignore
     from PySide6.QtGui import QFont  # type: ignore
 
-from ui.theme import ACCENT, BG, BORDER, MUTED, TEXT, PANEL, SURFACE, SUCCESS, ERROR
+from ui.theme import ACCENT, ACCENT2, BG, BORDER, MUTED, TEXT, PANEL, SURFACE, SUCCESS, ERROR
 
 # ── Audio backend detection ────────────────────────────────────────────────────
 _PYGAME_OK = False
@@ -150,6 +150,7 @@ class SoundboardPanel(QDockWidget):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__("🔊  Soundboard", parent)
         self.setObjectName("SoundboardPanel")
+        self.setWindowTitle("Audio Console")
         self.setAllowedAreas(Qt.DockWidgetArea.AllDockWidgetAreas)  # type: ignore[attr-defined]
         self.setFeatures(
             QDockWidget.DockWidgetFeature.DockWidgetMovable    |  # type: ignore[attr-defined]
@@ -171,6 +172,15 @@ class SoundboardPanel(QDockWidget):
         # ── UI widget refs (set in _build_* methods) ──
         self._scene_list_widget: Optional[QListWidget] = None
         self._slot_scroll_layout: Optional[QVBoxLayout] = None
+        self._soundset_list_widget: Optional[QListWidget] = None
+        self._elements_grid_layout: Optional[QGridLayout] = None
+        self._scene_tabs: Optional[QTabWidget] = None
+        self._campaign_scene_panel: Optional[QDockWidget] = None
+        self._campaign_scene_layout: Optional[QVBoxLayout] = None
+        self._element_volume_sliders: Dict[str, QSlider] = {}
+        self._element_play_buttons: Dict[str, QPushButton] = {}
+        self._element_label_buttons: Dict[str, QPushButton] = {}
+        self._element_volume_by_path: Dict[str, int] = {}
 
         self._settings = QSettings("ProjectCeres", "GMAssistant")
 
@@ -194,20 +204,121 @@ class SoundboardPanel(QDockWidget):
         outer_layout.setContentsMargins(6, 6, 6, 6)
         outer_layout.setSpacing(5)
 
-        # ── Tab widget ──
-        tabs = QTabWidget()
-        tabs.addTab(self._build_sounds_tab(), "🎵 Sounds")
-        tabs.addTab(self._build_scenes_tab(), "🎬 Scenes")
-        outer_layout.addWidget(tabs, 1)
+        header = QHBoxLayout()
+        title = QLabel("CERES AUDIO")
+        title.setProperty("class", "section-header")
+        header.addWidget(title, 1)
 
-        # ── Now-playing bar (shared, below tabs) ──
+        load_btn = QPushButton("Load Folder")
+        load_btn.setToolTip("Load a folder of audio files as your soundboard")
+        load_btn.clicked.connect(self._load_folder)
+        header.addWidget(load_btn)
+
+        clear_btn = QPushButton("Clear")
+        clear_btn.setToolTip("Remove all loaded sounds")
+        clear_btn.clicked.connect(self._clear_board)
+        header.addWidget(clear_btn)
+
+        stop_btn = QPushButton("Stop All")
+        stop_btn.setProperty("class", "accent")
+        stop_btn.setToolTip("Stop all currently playing audio")
+        stop_btn.clicked.connect(self._stop_all)
+        header.addWidget(stop_btn)
+
+        vol_lbl = QLabel("Vol:")
+        vol_lbl.setProperty("class", "muted")
+        header.addWidget(vol_lbl)
+
+        self._vol_slider = QSlider(Qt.Orientation.Horizontal)  # type: ignore[attr-defined]
+        self._vol_slider.setRange(0, 100)
+        self._vol_slider.setValue(int(self._volume * 100))
+        self._vol_slider.setFixedWidth(90)
+        self._vol_slider.setToolTip("Master volume")
+        self._vol_slider.valueChanged.connect(self._on_volume_changed)
+        header.addWidget(self._vol_slider)
+        outer_layout.addLayout(header)
+
+        console = QSplitter(Qt.Orientation.Horizontal)  # type: ignore[attr-defined]
+        console.setStyleSheet(f"QSplitter::handle {{ background: {BORDER}; width: 3px; }}")
+        console.addWidget(self._build_soundset_pane())
+        console.addWidget(self._build_elements_pane())
+        console.addWidget(self._build_scene_pane())
+        console.setSizes([210, 520, 300])
+        outer_layout.addWidget(console, 1)
+
         now_row = QHBoxLayout()
-        self._now_playing_label = QLabel("— idle —")
+        self._now_playing_label = QLabel("-- idle --")
         self._now_playing_label.setStyleSheet(f"color: {MUTED}; font-size: 10px;")
         now_row.addWidget(self._now_playing_label, 1)
         outer_layout.addLayout(now_row)
 
         self.setWidget(outer)
+
+    def _build_soundset_pane(self) -> QWidget:
+        pane = QFrame()
+        pane.setProperty("class", "winamp-panel-frame")
+        layout = QVBoxLayout(pane)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(5)
+
+        hdr = QLabel("Soundsets")
+        hdr.setProperty("class", "section-header")
+        layout.addWidget(hdr)
+
+        self._soundset_list_widget = QListWidget()
+        self._soundset_list_widget.setStyleSheet(
+            f"QListWidget {{ background: {PANEL}; border: 1px solid {BORDER}; }}"
+            f"QListWidget::item {{ color: {MUTED}; padding: 5px; }}"
+            f"QListWidget::item:selected {{ background: {SURFACE}; color: {TEXT}; }}"
+        )
+        layout.addWidget(self._soundset_list_widget, 1)
+        return pane
+
+    def _build_elements_pane(self) -> QWidget:
+        pane = QFrame()
+        pane.setProperty("class", "winamp-panel-frame")
+        layout = QVBoxLayout(pane)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(5)
+
+        hdr = QLabel("Elements")
+        hdr.setProperty("class", "section-header")
+        layout.addWidget(hdr)
+
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)  # type: ignore[attr-defined]
+        self._scroll.setStyleSheet(f"background: {BG}; border: none;")
+
+        self._board_widget = QWidget()
+        self._elements_grid_layout = QGridLayout(self._board_widget)
+        self._elements_grid_layout.setContentsMargins(6, 6, 6, 6)
+        self._elements_grid_layout.setSpacing(8)
+        self._scroll.setWidget(self._board_widget)
+        layout.addWidget(self._scroll, 1)
+        return pane
+
+    def _build_scene_pane(self) -> QWidget:
+        pane = QFrame()
+        pane.setProperty("class", "winamp-panel-frame")
+        layout = QVBoxLayout(pane)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(5)
+
+        self._scene_tabs = QTabWidget()
+        campaign = QWidget()
+        self._campaign_scene_layout = QVBoxLayout(campaign)
+        self._campaign_scene_layout.setContentsMargins(0, 0, 0, 0)
+        waiting = QLabel("Campaign scenes will appear here once audio modules are ready.")
+        waiting.setWordWrap(True)
+        waiting.setProperty("class", "muted")
+        self._campaign_scene_layout.addWidget(waiting)
+        self._campaign_scene_layout.addStretch()
+
+        self._scene_tabs.addTab(campaign, "Campaign Scenes")
+        self._scene_tabs.addTab(self._build_scenes_tab(), "Sound Scenes")
+        layout.addWidget(self._scene_tabs, 1)
+        return pane
 
     def _build_sounds_tab(self) -> QWidget:
         """Build the Sounds tab — existing folder/button behaviour."""
@@ -397,7 +508,6 @@ class SoundboardPanel(QDockWidget):
             folder_path = Path(saved_folder)
             if folder_path.exists():
                 self._sound_folder = folder_path
-                self._clear_layout(self._board_layout)
                 self._rebuild_board()
                 self.status_message.emit(
                     f"Soundboard: restored {folder_path.name}"
@@ -429,20 +539,29 @@ class SoundboardPanel(QDockWidget):
         self._stop_all()
         self._sound_folder = None
         self._settings.remove("soundboard/folder")
-        self._clear_layout(self._board_layout)
-        self._board_layout.addStretch()
+        if self._elements_grid_layout is not None:
+            self._clear_layout(self._elements_grid_layout)
+        if self._soundset_list_widget is not None:
+            self._soundset_list_widget.clear()
         self._show_no_folder_hint()
 
     def _rebuild_board(self) -> None:
-        """Scan folder and rebuild all category groups + sound buttons."""
+        """Scan folder and rebuild soundset list plus Winamp element tiles."""
         self._stop_all()
-        self._clear_layout(self._board_layout)
+        if self._elements_grid_layout is None:
+            return
+
+        self._clear_layout(self._elements_grid_layout)
+        self._element_volume_sliders.clear()
+        self._element_play_buttons.clear()
+        self._element_label_buttons.clear()
+        if self._soundset_list_widget is not None:
+            self._soundset_list_widget.clear()
 
         if self._sound_folder is None or not self._sound_folder.exists():
             self._show_no_folder_hint()
             return
 
-        # Collect files: group by immediate subfolder name, or "General"
         categories: Dict[str, List[Path]] = {}
         for entry in sorted(self._sound_folder.rglob("*")):
             if entry.is_file() and entry.suffix.lower() in AUDIO_EXTENSIONS:
@@ -457,37 +576,168 @@ class SoundboardPanel(QDockWidget):
             hint = QLabel(f"No audio files found.\nSupported: {', '.join(sorted(AUDIO_EXTENSIONS))}")
             hint.setAlignment(Qt.AlignmentFlag.AlignCenter)  # type: ignore[attr-defined]
             hint.setStyleSheet(f"color: {MUTED};")
-            self._board_layout.insertWidget(0, hint)
-            self._board_layout.addStretch()
+            self._elements_grid_layout.addWidget(hint, 0, 0)
             return
 
+        if self._soundset_list_widget is not None:
+            for cat_name in sorted(categories):
+                self._soundset_list_widget.addItem(f"{_icon_for_category(cat_name)}  {cat_name}")
+
+        tile_index = 0
         for cat_name in sorted(categories):
             files = categories[cat_name]
-            icon = _icon_for_category(cat_name)
-            group = QGroupBox(f"{icon}  {cat_name}")
-            group.setStyleSheet(
-                f"QGroupBox {{ color: {ACCENT}; border: 1px solid #2a2a4a; "
-                f"border-radius: 4px; margin-top: 1.2em; padding: 6px; }}"
-                f"QGroupBox::title {{ subcontrol-origin: margin; left: 8px; "
-                f"padding: 0 4px; color: {ACCENT}; font-weight: bold; }}"
-            )
-            grid = QGridLayout(group)
-            grid.setSpacing(4)
-
-            for i, path in enumerate(sorted(files, key=lambda p: p.stem.lower())):
-                btn = SoundButton(path)
-                btn.clicked.connect(lambda checked, p=path: self._play(p))
-                grid.addWidget(btn, i // BUTTONS_PER_ROW, i % BUTTONS_PER_ROW)
-
-            self._board_layout.addWidget(group)
-
-        self._board_layout.addStretch()
+            for path in sorted(files, key=lambda p: p.stem.lower()):
+                tile = self._make_element_tile(path)
+                self._elements_grid_layout.addWidget(
+                    tile,
+                    tile_index // BUTTONS_PER_ROW,
+                    tile_index % BUTTONS_PER_ROW,
+                )
+                tile_index += 1
 
     def _show_no_folder_hint(self) -> None:
-        hint = QLabel('Click "📁 Load Folder" to load your sounds.')
+        hint = QLabel('Click "Load Folder" to load your sounds.')
         hint.setAlignment(Qt.AlignmentFlag.AlignCenter)  # type: ignore[attr-defined]
         hint.setStyleSheet(f"color: {MUTED}; padding: 20px;")
-        self._board_layout.insertWidget(0, hint)
+        if self._elements_grid_layout is not None:
+            self._clear_layout(self._elements_grid_layout)
+            self._elements_grid_layout.addWidget(hint, 0, 0)
+
+    def _make_element_tile(self, path: Path) -> QFrame:
+        key = str(path)
+        saved_volume = self._settings.value(f"soundboard/elements/{key}/volume", 80, type=int)
+        self._element_volume_by_path[key] = saved_volume
+
+        tile = QFrame()
+        tile.setProperty("class", "winamp-panel-frame")
+        tile.setMinimumSize(104, 150)
+        tile.setStyleSheet(
+            f"QFrame {{ background: {PANEL}; border: 1px solid {BORDER}; border-radius: 1px; }}"
+        )
+
+        layout = QVBoxLayout(tile)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(5)
+
+        controls = QHBoxLayout()
+        controls.setSpacing(6)
+
+        knob_col = QVBoxLayout()
+        knob_col.setSpacing(4)
+
+        play_btn = QPushButton("▶")
+        play_btn.setFixedSize(26, 22)
+        play_btn.setToolTip(f"Play {path.name}")
+        self._style_element_play_btn(play_btn)
+        play_btn.clicked.connect(lambda checked, p=path: self._play(p))
+        knob_col.addWidget(play_btn, 0, Qt.AlignmentFlag.AlignCenter)  # type: ignore[attr-defined]
+
+        knob = QLabel()
+        knob.setFixedSize(52, 52)
+        knob.setStyleSheet(
+            "QLabel {"
+            " border-radius: 26px;"
+            f" border: 2px solid {BORDER};"
+            " background: qradialgradient(cx:0.35, cy:0.3, radius:0.8,"
+            f" stop:0 {MUTED}, stop:0.45 {SURFACE}, stop:1 #050608);"
+            f" border-top-color: {MUTED}; border-left-color: {MUTED};"
+            "}"
+        )
+        knob.setToolTip("Winamp element control")
+        knob_col.addWidget(knob, 0, Qt.AlignmentFlag.AlignCenter)  # type: ignore[attr-defined]
+        controls.addLayout(knob_col)
+
+        fader = QSlider(Qt.Orientation.Vertical)  # type: ignore[attr-defined]
+        fader.setRange(0, 100)
+        fader.setValue(saved_volume)
+        fader.setFixedHeight(82)
+        fader.setToolTip("Element volume")
+        self._style_vertical_fader(fader)
+        fader.valueChanged.connect(lambda value, k=key: self._on_element_volume_changed(k, value))
+        controls.addWidget(fader, 0, Qt.AlignmentFlag.AlignCenter)  # type: ignore[attr-defined]
+
+        layout.addLayout(controls)
+
+        label_btn = QPushButton(_stem_label(path, 16))
+        label_btn.setToolTip(str(path))
+        label_btn.setFixedHeight(24)
+        self._style_element_label_btn(label_btn)
+        label_btn.clicked.connect(lambda checked, p=path: self._play(p))
+        layout.addWidget(label_btn)
+
+        pct = QLabel(f"{saved_volume}%")
+        pct.setAlignment(Qt.AlignmentFlag.AlignCenter)  # type: ignore[attr-defined]
+        pct.setStyleSheet(f"color: {MUTED}; font-size: 9px;")
+        fader.valueChanged.connect(lambda value, label=pct: label.setText(f"{value}%"))
+        layout.addWidget(pct)
+
+        self._element_volume_sliders[key] = fader
+        self._element_play_buttons[key] = play_btn
+        self._element_label_buttons[key] = label_btn
+        return tile
+
+    def _on_element_volume_changed(self, key: str, value: int) -> None:
+        self._element_volume_by_path[key] = value
+        self._settings.setValue(f"soundboard/elements/{key}/volume", value)
+
+    def _style_element_play_btn(self, btn: QPushButton) -> None:
+        btn.setStyleSheet(
+            f"QPushButton {{ background: {BG}; color: {ACCENT};"
+            f" border: 1px solid {ACCENT}; border-radius: 1px;"
+            " font-weight: bold; padding: 0;"
+            f" box-shadow: 0 0 4px {ACCENT}; }}"
+            f"QPushButton:hover {{ color: {ACCENT2}; border-color: {ACCENT2}; }}"
+            f"QPushButton:pressed {{ background: {SURFACE}; color: {ACCENT2}; }}"
+        )
+
+    def _style_element_label_btn(self, btn: QPushButton) -> None:
+        btn.setStyleSheet(
+            f"QPushButton {{ background: {BG}; color: {TEXT};"
+            f" border: 1px solid {BORDER}; border-radius: 1px; padding: 2px;"
+            " font-size: 10px; }}"
+            f"QPushButton:hover {{ border-color: {ACCENT}; color: {ACCENT}; }}"
+            f"QPushButton:pressed {{ color: {ACCENT2}; }}"
+        )
+
+    def _style_vertical_fader(self, slider: QSlider) -> None:
+        slider.setStyleSheet(
+            "QSlider::groove:vertical { background: #020302; width: 5px;"
+            f" border: 1px solid #05060a; border-right-color: {BORDER};"
+            f" border-bottom-color: {BORDER}; border-radius: 1px; }}"
+            "QSlider::handle:vertical { background: qlineargradient(x1:0, y1:0, x2:1, y2:0,"
+            f" stop:0 #fff3a3, stop:0.45 {ACCENT2}, stop:1 #806713);"
+            " width: 14px; height: 10px; margin: 0 -5px; border: 1px solid #05060a;"
+            " border-radius: 1px; }"
+            "QSlider::sub-page:vertical { background: transparent; border-radius: 1px; }"
+            f"QSlider::add-page:vertical {{ background: {ACCENT2}; border-radius: 1px; }}"
+        )
+
+    def _clear_layout(self, layout) -> None:
+        while layout.count():
+            item = layout.takeAt(0)
+            child = item.widget()
+            child_layout = item.layout()
+            if child is not None:
+                child.deleteLater()
+            elif child_layout is not None:
+                self._clear_layout(child_layout)
+
+    def configure_campaign_scenes(self, panel_refs: Dict[str, object], config: object) -> QDockWidget:
+        from ui.panels.master_scene_panel import MasterScenePanel
+
+        if self._campaign_scene_layout is None:
+            raise RuntimeError("Campaign scene pane has not been built")
+
+        self._clear_layout(self._campaign_scene_layout)
+        panel = MasterScenePanel(panel_refs, config, self)
+        panel.setWindowTitle("Campaign Scenes")
+        panel.status_message.connect(self.status_message.emit)
+        self._campaign_scene_panel = panel
+        self._campaign_scene_layout.addWidget(panel)
+        return panel
+
+    def campaign_scene_handler(self) -> Optional[QDockWidget]:
+        return self._campaign_scene_panel
 
     # ══════════════════════════════════════════════════════════════════════════
     # Sounds tab — playback
@@ -506,7 +756,8 @@ class SoundboardPanel(QDockWidget):
             if _PYGAME_OK:
                 pygame.mixer.music.stop()
                 pygame.mixer.music.load(str(path))
-                pygame.mixer.music.set_volume(self._volume)
+                element_volume = self._element_volume_by_path.get(str(path), 100) / 100.0
+                pygame.mixer.music.set_volume(self._volume * element_volume)
                 pygame.mixer.music.play()
             elif _WINSOUND_OK and path.suffix.lower() == ".wav":
                 import winsound  # type: ignore
@@ -1041,6 +1292,17 @@ class SoundboardPanel(QDockWidget):
         btn.setStyleSheet(
             f"QPushButton {{ background: {SURFACE}; color: {MUTED}; font-size: 9px;"
             f"  border: 1px solid {BORDER}; border-radius: 3px; padding: 2px 6px; }}"
+            f"QPushButton:hover {{ border-color: {ACCENT}; color: {ACCENT}; }}"
+            f"QPushButton:pressed {{ background: {PANEL}; }}"
+        )
+
+    def _style_loop_btn(self, btn: QPushButton, active: bool) -> None:
+        color = ACCENT2 if active else MUTED
+        border = ACCENT2 if active else BORDER
+        background = PANEL if active else SURFACE
+        btn.setStyleSheet(
+            f"QPushButton {{ background: {background}; color: {color}; font-size: 9px;"
+            f"  border: 1px solid {border}; border-radius: 3px; padding: 2px 6px; }}"
             f"QPushButton:hover {{ border-color: {ACCENT}; color: {ACCENT}; }}"
             f"QPushButton:pressed {{ background: {PANEL}; }}"
         )

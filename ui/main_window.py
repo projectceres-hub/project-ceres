@@ -309,8 +309,8 @@ class MainWindow(QMainWindow):
         # Wire Discord Plex/Jellyfin voice commands → Plex/Jellyfin panel
         self._discord_panel.plex_jellyfin_command.connect(self._plex_jellyfin_panel.handle_command)
 
-        # 18. Master Scenes - cross-panel scene orchestration
-        self._master_scene_panel = MasterScenePanel(
+        # 18. Campaign Scenes - embedded in the Audio Console scene pane
+        self._master_scene_panel = self._soundboard_panel.configure_campaign_scenes(
             {
                 "spotify": self._spotify_panel,
                 "syrinscape": self._syrinscape_panel,
@@ -321,11 +321,8 @@ class MainWindow(QMainWindow):
                 "plex_jellyfin": self._plex_jellyfin_panel,
             },
             self._config,
-            self,
         )
         self._master_scene_panel.status_message.connect(self._set_status)
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._master_scene_panel)  # type: ignore[attr-defined]
-        self.tabifyDockWidget(self._plex_jellyfin_panel, self._master_scene_panel)
         self._discord_panel.scene_command.connect(self._master_scene_panel.handle_command)
 
         # ── Wire Scheduler ↔ Discord ──────────────────────────────────────────
@@ -374,7 +371,8 @@ class MainWindow(QMainWindow):
         "Equalizer":        "music.png",
         "Visualiser":       "music.png",
         "Plex / Jellyfin":  "music.png",
-        "Master Scenes":    "music.png",
+        "Audio Console":    "music.png",
+        "Campaign Scenes":  "music.png",
     }
 
     def _apply_tab_icons(self) -> None:
@@ -440,7 +438,6 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self._eq_panel.toggleViewAction())
         view_menu.addAction(self._visualiser_panel.toggleViewAction())
         view_menu.addAction(self._plex_jellyfin_panel.toggleViewAction())
-        view_menu.addAction(self._master_scene_panel.toggleViewAction())
         view_menu.addAction(self._mixer_panel.toggleViewAction())
         view_menu.addSeparator()
         self._add_action(view_menu, "Reset Layout", self._reset_layout)
@@ -463,7 +460,6 @@ class MainWindow(QMainWindow):
         mod_menu.addAction(self._eq_panel.toggleViewAction())
         mod_menu.addAction(self._visualiser_panel.toggleViewAction())
         mod_menu.addAction(self._plex_jellyfin_panel.toggleViewAction())
-        mod_menu.addAction(self._master_scene_panel.toggleViewAction())
         mod_menu.addAction(self._mixer_panel.toggleViewAction())
 
         # ── Help menu ──
@@ -620,8 +616,6 @@ class MainWindow(QMainWindow):
         self.tabifyDockWidget(self._now_playing_panel, self._visualiser_panel)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,  self._plex_jellyfin_panel)  # type: ignore[attr-defined]
         self.tabifyDockWidget(self._visualiser_panel, self._plex_jellyfin_panel)
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,  self._master_scene_panel)  # type: ignore[attr-defined]
-        self.tabifyDockWidget(self._plex_jellyfin_panel, self._master_scene_panel)
         self._discord_panel.raise_()
         self._apply_tab_icons()
 
@@ -716,7 +710,7 @@ class MainWindow(QMainWindow):
             "&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"
             "!jellyplay, !jellystop, !jellypause (Jellyfin)<br>"
             "&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"
-            "!scene &lt;name or number&gt;, !scenestop (Master Scenes)<br>"
+            "!scene &lt;name or number&gt;, !scenestop (Campaign Scenes)<br>"
             "<b>Wake words:</b> 'Hey Ceres' or 'Okay Ceres' (voice commands)<br>"
         )
         QMessageBox.information(self, "Help", text)
