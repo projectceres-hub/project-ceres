@@ -10,7 +10,7 @@ os.environ.setdefault("QT_OPENGL", "software")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 
 from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QApplication, QLabel, QPushButton, QSizePolicy, QSlider
+from PyQt5.QtWidgets import QApplication, QLabel, QListView, QPushButton, QSizePolicy, QSlider
 
 from core.config import Config
 from ui.panels.master_scene_panel import MasterScenePanel
@@ -42,16 +42,28 @@ class SoundboardAudioConsoleTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication([sys.argv[0]])
 
-    def test_soundboard_builds_three_pane_audio_console(self) -> None:
+    def test_soundboard_stacks_horizontal_soundset_and_element_bars_above_scenes(self) -> None:
         panel = SoundboardPanel()
         try:
             self.assertEqual(panel.windowTitle(), "Audio Console")
             self.assertIsNotNone(panel._soundset_list_widget)
             self.assertIsNotNone(panel._elements_grid_layout)
             self.assertIsNotNone(panel._scene_tabs)
+            self.assertEqual(
+                panel._console_splitter.orientation(),
+                Qt.Orientation.Vertical,
+            )
+            self.assertEqual(panel._console_splitter_default_sizes, [90, 170, 420])
+            self.assertEqual(
+                panel._soundset_list_widget.flow(),
+                QListView.Flow.LeftToRight,
+            )
+            self.assertEqual(
+                panel._soundset_list_widget.horizontalScrollBarPolicy(),
+                Qt.ScrollBarPolicy.ScrollBarAsNeeded,
+            )
             self.assertEqual(panel._scene_tabs.tabText(0), "Sound Scenes")
             self.assertEqual(panel._scene_tabs.tabText(1), "Campaign Scenes")
-            self.assertEqual(panel._console_splitter_default_sizes, [240, 240, 240])
             self.assertEqual(panel._sound_scene_splitter_default_sizes, [300, 300])
             self.assertEqual(panel._sound_scene_splitter.sizes(), [320, 320])
             self.assertTrue(
@@ -69,13 +81,15 @@ class SoundboardAudioConsoleTests(unittest.TestCase):
         finally:
             panel.close()
 
-    def test_element_tiles_have_vertical_faders_and_two_play_targets(self) -> None:
+    def test_element_tiles_have_vertical_faders_two_play_targets_and_flow_horizontally(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             folder = Path(tmp)
             combat = folder / "combat"
             combat.mkdir()
             sound_path = combat / "sword-hit.wav"
             sound_path.write_bytes(b"not a real wav")
+            second_sound_path = combat / "shield-block.wav"
+            second_sound_path.write_bytes(b"not a real wav")
 
             panel = SoundboardPanel()
             played: list[Path] = []
@@ -89,6 +103,11 @@ class SoundboardAudioConsoleTests(unittest.TestCase):
                     panel._element_volume_sliders[key].orientation(),
                     Qt.Orientation.Vertical,
                 )
+                self.assertIn(str(second_sound_path), panel._element_volume_sliders)
+                first_position = panel._elements_grid_layout.getItemPosition(0)
+                second_position = panel._elements_grid_layout.getItemPosition(1)
+                self.assertEqual(first_position[:2], (0, 0))
+                self.assertEqual(second_position[:2], (0, 1))
 
                 with patch.object(panel, "_play", lambda path: played.append(path)):
                     panel._element_play_buttons[key].click()

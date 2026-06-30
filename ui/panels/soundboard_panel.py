@@ -35,7 +35,7 @@ try:
     from PyQt5.QtWidgets import (
         QDockWidget, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
         QPushButton, QLabel, QSlider, QFileDialog, QScrollArea,
-        QGroupBox, QSizePolicy, QMessageBox, QTabWidget, QListWidget,
+        QGroupBox, QSizePolicy, QMessageBox, QTabWidget, QListWidget, QListView,
         QListWidgetItem, QInputDialog, QSplitter, QFrame,
     )
     from PyQt5.QtCore import Qt, QTimer, QSettings, QSize, pyqtSignal as Signal, pyqtSlot as Slot
@@ -44,7 +44,7 @@ except ImportError:
     from PySide6.QtWidgets import (  # type: ignore
         QDockWidget, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
         QPushButton, QLabel, QSlider, QFileDialog, QScrollArea,
-        QGroupBox, QSizePolicy, QMessageBox, QTabWidget, QListWidget,
+        QGroupBox, QSizePolicy, QMessageBox, QTabWidget, QListWidget, QListView,
         QListWidgetItem, QInputDialog, QSplitter, QFrame,
     )
     from PySide6.QtCore import Qt, QTimer, QSettings, QSize, Signal, Slot  # type: ignore
@@ -238,14 +238,19 @@ class SoundboardPanel(QDockWidget):
         header.addWidget(self._vol_slider)
         outer_layout.addLayout(header)
 
-        self._console_splitter = QSplitter(Qt.Orientation.Horizontal)  # type: ignore[attr-defined]
-        self._console_splitter.setStyleSheet(f"QSplitter::handle {{ background: {BORDER}; width: 3px; }}")
+        self._console_splitter = QSplitter(Qt.Orientation.Vertical)  # type: ignore[attr-defined]
+        self._console_splitter.setStyleSheet(
+            f"QSplitter::handle {{ background: {BORDER}; height: 3px; }}"
+        )
         self._console_splitter.addWidget(self._build_soundset_pane())
         self._console_splitter.addWidget(self._build_elements_pane())
         self._console_splitter.addWidget(self._build_scene_pane())
-        self._console_splitter_default_sizes = [240, 240, 240]
+        self._console_splitter_default_sizes = [90, 170, 420]
         for index in range(3):
             self._console_splitter.setStretchFactor(index, 1)
+        self._console_splitter.setStretchFactor(0, 0)
+        self._console_splitter.setStretchFactor(1, 0)
+        self._console_splitter.setStretchFactor(2, 1)
         self._console_splitter.setSizes(self._console_splitter_default_sizes)
         outer_layout.addWidget(self._console_splitter, 1)
 
@@ -269,9 +274,15 @@ class SoundboardPanel(QDockWidget):
         layout.addWidget(hdr)
 
         self._soundset_list_widget = QListWidget()
+        self._soundset_list_widget.setFlow(QListView.Flow.LeftToRight)
+        self._soundset_list_widget.setWrapping(False)
+        self._soundset_list_widget.setResizeMode(QListView.ResizeMode.Adjust)
+        self._soundset_list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)  # type: ignore[attr-defined]
+        self._soundset_list_widget.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)  # type: ignore[attr-defined]
+        self._soundset_list_widget.setFixedHeight(42)
         self._soundset_list_widget.setStyleSheet(
             f"QListWidget {{ background: {PANEL}; border: 1px solid {BORDER}; }}"
-            f"QListWidget::item {{ color: {MUTED}; padding: 5px; }}"
+            f"QListWidget::item {{ color: {MUTED}; padding: 5px 14px; }}"
             f"QListWidget::item:selected {{ background: {SURFACE}; color: {TEXT}; }}"
         )
         layout.addWidget(self._soundset_list_widget, 1)
@@ -290,7 +301,8 @@ class SoundboardPanel(QDockWidget):
 
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
-        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)  # type: ignore[attr-defined]
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)  # type: ignore[attr-defined]
+        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)  # type: ignore[attr-defined]
         self._scroll.setStyleSheet(f"background: {BG}; border: none;")
 
         self._board_widget = QWidget()
@@ -595,8 +607,8 @@ class SoundboardPanel(QDockWidget):
                 tile = self._make_element_tile(path)
                 self._elements_grid_layout.addWidget(
                     tile,
-                    tile_index // BUTTONS_PER_ROW,
-                    tile_index % BUTTONS_PER_ROW,
+                    0,
+                    tile_index,
                 )
                 tile_index += 1
 
