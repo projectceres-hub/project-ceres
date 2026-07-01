@@ -495,6 +495,7 @@ class YouTubePanel(QDockWidget):
 
         self._search_worker.results_ready.connect(self._on_results_ready)
         self._search_worker.search_error.connect(self._on_search_error)
+        self._search_thread.finished.connect(self._search_worker.deleteLater)
 
         self._sig_search.connect(self._search_worker.do_search)
         self._sig_playlists.connect(self._search_worker.do_load_playlists)
@@ -1399,6 +1400,14 @@ class YouTubePanel(QDockWidget):
             self._audio_thread.quit()
             self._audio_thread.wait(2000)
         if hasattr(self, "_search_thread") and self._search_thread.isRunning():
+            try:
+                self._sig_search.disconnect(self._search_worker.do_search)
+            except Exception:
+                pass
+            try:
+                self._sig_playlists.disconnect(self._search_worker.do_load_playlists)
+            except Exception:
+                pass
             self._search_thread.quit()
             self._search_thread.wait(2000)
         super().closeEvent(event)

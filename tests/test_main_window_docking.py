@@ -29,6 +29,12 @@ class MainWindowDockingTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication([sys.argv[0]])
+        # Keep PyQt wrappers alive; rapid MainWindow GC can abort during dock teardown.
+        cls._windows = []
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.app.quit()
 
     def _build_window(self, restore_panel_visibility: bool = False) -> MainWindow:
         config = Config(vaults={"TestVault": "GMAssistantVault"}, current_vault="TestVault")
@@ -39,7 +45,9 @@ class MainWindowDockingTests(unittest.TestCase):
             else patch.object(MainWindow, "_restore_panel_visibility", MainWindow._restore_panel_visibility)
         )
         with patch.object(MainWindow, "_restore_geometry", lambda self: None), restore_panel_patch:
-            return MainWindow(config, lambda _command: "")
+            window = MainWindow(config, lambda _command: "")
+            self._windows.append(window)
+            return window
 
     def test_default_dock_policy_allows_split_drops_without_user_tab_drops(self) -> None:
         window = self._build_window()
