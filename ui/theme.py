@@ -155,6 +155,70 @@ QPushButton[class="accent"]:hover {{
     background: #fff172;
     border-color: {ACCENT};
 }}
+QPushButton[class="media-control"] {{
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #d6dfef, stop:0.18 #8d96aa, stop:0.5 #313a54, stop:1 #111522);
+    color: {ACCENT};
+    border: 1px solid {SHADOW};
+    border-top-color: {HILITE};
+    border-left-color: {HILITE};
+    border-right-color: #000000;
+    border-bottom-color: #000000;
+    border-radius: 1px;
+    padding: 0;
+    font-family: Arial, Helvetica, sans-serif;
+    font-weight: bold;
+    font-size: 13px;
+}}
+QPushButton[class="media-control"]:hover {{
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #eef5ff, stop:0.22 #9aa5bb, stop:0.55 #4b5f95, stop:1 #161b33);
+    color: {ACCENT2};
+    border-top-color: {HILITE};
+    border-left-color: {HILITE};
+    border-bottom-color: {ACCENT2};
+}}
+QPushButton[class="media-control"]:pressed,
+QPushButton[class="media-control"]:checked {{
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #050608, stop:0.35 #111522, stop:1 #4b5f95);
+    color: {ACCENT2};
+    border-top-color: {SHADOW};
+    border-left-color: {SHADOW};
+    border-right-color: {HILITE};
+    border-bottom-color: {HILITE};
+}}
+QPushButton[class="media-control-primary"] {{
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #eef5ff, stop:0.2 #8d96aa, stop:0.52 #313a54, stop:1 #111522);
+    color: {ACCENT2};
+    border: 1px solid {SHADOW};
+    border-top-color: {HILITE};
+    border-left-color: {HILITE};
+    border-right-color: #000000;
+    border-bottom-color: #000000;
+    border-radius: 1px;
+    padding: 0;
+    font-family: Arial, Helvetica, sans-serif;
+    font-weight: bold;
+    font-size: 13px;
+}}
+QPushButton[class="media-control-primary"]:hover {{
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #ffffff, stop:0.24 #a8b0c2, stop:0.55 #4b5f95, stop:1 #161b33);
+    color: {ACCENT};
+    border-top-color: {ACCENT2};
+    border-left-color: {ACCENT2};
+}}
+QPushButton[class="media-control-primary"]:pressed {{
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #050608, stop:0.35 #111522, stop:1 #313a54);
+    color: {ACCENT};
+    border-top-color: {SHADOW};
+    border-left-color: {SHADOW};
+    border-right-color: {HILITE};
+    border-bottom-color: {HILITE};
+}}
 QPushButton:disabled {{
     background: #2a2f3d;
     color: #6f7786;

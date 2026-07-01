@@ -31,6 +31,78 @@ class WinampThemeTest(unittest.TestCase):
         self.assertIn("border-radius: 1px", qss)
         self.assertIn("#f3d94e", qss)
 
+    def test_stylesheet_contains_winamp_media_button_classes(self):
+        qss = theme.STYLESHEET
+        self.assertIn('QPushButton[class="media-control"]', qss)
+        self.assertIn('QPushButton[class="media-control-primary"]', qss)
+        media_qss = qss.split('QPushButton[class="media-control"]', 1)[1]
+        primary_qss = qss.split('QPushButton[class="media-control-primary"]', 1)[1]
+        self.assertIn("#00ff3c", media_qss)
+        self.assertIn("#4b5f95", media_qss)
+        self.assertIn("#313a54", primary_qss)
+        self.assertNotIn("#7cff91", primary_qss.split("QPushButton:disabled", 1)[0])
+
+    def test_spotify_transport_buttons_use_winamp_media_classes(self):
+        try:
+            from PyQt5.QtWidgets import QApplication
+        except ImportError:
+            from PySide6.QtWidgets import QApplication  # type: ignore
+
+        from core.config import Config
+        from ui.panels.spotify_panel import SpotifyPanel
+
+        app = QApplication.instance() or QApplication([sys.argv[0]])
+        config = Config(vaults={"TestVault": "GMAssistantVault"}, current_vault="TestVault")
+        panel = SpotifyPanel(config, lambda _command: "")
+        try:
+            self.assertEqual(panel._play_btn.property("class"), "media-control-primary")
+            self.assertLessEqual(panel._play_btn.height(), 24)
+            self.assertLessEqual(panel._play_btn.width(), 34)
+            self.assertEqual(panel._prev_btn.text(), "|<")
+            self.assertEqual(panel._next_btn.text(), ">|")
+            panel._on_playback_updated(
+                {
+                    "is_playing": True,
+                    "progress_ms": 0,
+                    "item": {"duration_ms": 1000, "artists": [], "album": {}},
+                }
+            )
+            self.assertEqual(panel._play_btn.text(), "||")
+            for button in (
+                panel._prev_btn,
+                panel._next_btn,
+                panel._shuffle_btn,
+                panel._repeat_btn,
+            ):
+                self.assertEqual(button.property("class"), "media-control")
+                self.assertLessEqual(button.height(), 24)
+                self.assertLessEqual(button.width(), 28)
+        finally:
+            panel.close()
+            app.processEvents()
+
+    def test_spotify_now_playing_art_placeholder_has_no_music_note(self):
+        try:
+            from PyQt5.QtWidgets import QApplication
+        except ImportError:
+            from PySide6.QtWidgets import QApplication  # type: ignore
+
+        from core.config import Config
+        from ui.panels.spotify_panel import SpotifyPanel
+
+        app = QApplication.instance() or QApplication([sys.argv[0]])
+        config = Config(vaults={"TestVault": "GMAssistantVault"}, current_vault="TestVault")
+        panel = SpotifyPanel(config, lambda _command: "")
+        try:
+            self.assertEqual(panel._art_label.text(), "")
+
+            panel._on_playback_updated({})
+
+            self.assertEqual(panel._art_label.text(), "")
+        finally:
+            panel.close()
+            app.processEvents()
+
 
 class MixerWinampLayoutTest(unittest.TestCase):
     def test_mixer_uses_vertical_winamp_sliders(self):

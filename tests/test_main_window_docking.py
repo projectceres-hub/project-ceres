@@ -16,6 +16,7 @@ from core.config import Config
 import ui.panels.browser_panel as browser_panel
 from ui.panels.spotify_panel import (
     SPOTIFY_LOOPBACK_REDIRECT_URI,
+    _SpotifyWorker,
     _normalize_loopback_redirect_uri,
     _should_auto_connect_spotify,
 )
@@ -82,6 +83,65 @@ class MainWindowDockingTests(unittest.TestCase):
         self.assertFalse(
             _should_auto_connect_spotify("client", "secret", "missing-cache-file")
         )
+
+    def test_spotify_play_track_targets_available_connect_device(self) -> None:
+        class FakeSpotify:
+            def __init__(self) -> None:
+                self.devices_called = False
+                self.transfers = []
+                self.play_calls = []
+
+            def devices(self) -> dict:
+                self.devices_called = True
+                return {
+                    "devices": [
+                        {
+                            "id": "device-1",
+                            "name": "Gaming PC",
+                            "type": "Computer",
+                            "is_active": False,
+                            "is_restricted": False,
+                        }
+                    ]
+                }
+
+            def transfer_playback(self, device_id: str, force_play: bool = False) -> None:
+                self.transfers.append((device_id, force_play))
+
+            def start_playback(self, **kwargs) -> None:
+                self.play_calls.append(kwargs)
+
+        fake = FakeSpotify()
+        worker = _SpotifyWorker()
+        worker._sp = fake
+
+        worker.do_play_track("spotify:track:abc")
+
+        self.assertTrue(fake.devices_called)
+        self.assertEqual(fake.transfers, [("device-1", False)])
+        self.assertEqual(
+            fake.play_calls,
+            [{"device_id": "device-1", "uris": ["spotify:track:abc"]}],
+        )
+
+    def test_spotify_resume_reports_guidance_when_no_connect_device_exists(self) -> None:
+        class FakeSpotify:
+            def devices(self) -> dict:
+                return {"devices": []}
+
+            def start_playback(self, **_kwargs) -> None:
+                raise AssertionError("start_playback should not run without a device")
+
+        worker = _SpotifyWorker()
+        worker._sp = FakeSpotify()
+        errors = []
+        worker.error.connect(errors.append)
+
+        worker.do_resume()
+
+        self.assertTrue(errors)
+        self.assertIn("Open Spotify", errors[-1])
+        self.assertIn("Connect device", errors[-1])
 
     def test_panel_visibility_restores_even_when_window_state_is_skipped(self) -> None:
         settings = QSettings("ProjectCeres", "GMAssistant")

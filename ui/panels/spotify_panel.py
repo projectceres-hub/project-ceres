@@ -60,7 +60,7 @@ try:
         QDockWidget, QWidget, QVBoxLayout, QHBoxLayout,
         QPushButton, QLabel, QLineEdit, QSlider, QProgressBar,
         QListWidget, QListWidgetItem, QTabWidget, QGridLayout,
-        QSizePolicy, QMessageBox, QInputDialog, QMenu,
+        QSizePolicy, QMessageBox, QInputDialog, QMenu, QComboBox,
     )
     from PyQt5.QtCore import Qt, QThread, QObject, QTimer, pyqtSignal as Signal, pyqtSlot as Slot
     from PyQt5.QtGui import QPixmap
@@ -69,7 +69,7 @@ except ImportError:
         QDockWidget, QWidget, QVBoxLayout, QHBoxLayout,
         QPushButton, QLabel, QLineEdit, QSlider, QProgressBar,
         QListWidget, QListWidgetItem, QTabWidget, QGridLayout,
-        QSizePolicy, QMessageBox, QInputDialog, QMenu,
+        QSizePolicy, QMessageBox, QInputDialog, QMenu, QComboBox,
     )
     from PySide6.QtCore import Qt, QThread, QObject, QTimer, Signal, Slot  # type: ignore
     from PySide6.QtGui import QPixmap  # type: ignore
@@ -109,6 +109,11 @@ SPOTIFY_SCOPE = (
 POLL_INTERVAL_MS  = 5_000   # API poll cadence
 PROGRESS_TICK_MS  = 1_000   # local progress interpolation cadence
 ALBUM_ART_SIZE    = 80       # pixels
+NO_SPOTIFY_DEVICE_MESSAGE = (
+    "No Spotify Connect device is available. Open Spotify on this computer, "
+    "phone, browser, or speaker, start any track once, then refresh the "
+    "Connect device list."
+)
 
 REPEAT_MODES: List[str] = ["off", "context", "track"]
 
@@ -238,6 +243,7 @@ class _SpotifyWorker(QObject):
     playback_updated = Signal(dict)       # current_playback() dict (or {} for nothing)
     search_results   = Signal(list)       # list of track dicts
     playlists_loaded = Signal(list)       # list of playlist dicts
+    devices_loaded   = Signal(list)       # list of Spotify Connect device dicts
     artwork_loaded   = Signal(str, bytes) # (image_url, raw_bytes)
     command_done     = Signal(str)        # brief status message
     error            = Signal(str)        # error message
@@ -248,6 +254,7 @@ class _SpotifyWorker(QObject):
         self._lock = threading.Lock()
         self._cancel_auth = threading.Event()
         self._last_artwork_url = ""
+        self._selected_device_id = ""
         self._poll_timer: Optional[QTimer] = None   # created lazily in do_connect
 
     # ── Inbound slots (invoked via queued connections from main thread) ────────
@@ -284,6 +291,7 @@ class _SpotifyWorker(QObject):
             self._poll_timer.start(POLL_INTERVAL_MS)
             # Populate library immediately
             self.do_load_playlists()
+            self.do_refresh_devices()
             self._poll_playback()
         except Exception as exc:
             self.auth_failed.emit(str(exc))
@@ -295,10 +303,26 @@ class _SpotifyWorker(QObject):
             self._poll_timer.stop()
         with self._lock:
             self._sp = None
+            self._selected_device_id = ""
         self.command_done.emit("Disconnected")
 
     def cancel_pending_auth(self) -> None:
         self._cancel_auth.set()
+
+    @Slot(str)
+    def do_select_device(self, device_id: str) -> None:
+        with self._lock:
+            self._selected_device_id = device_id.strip()
+
+    @Slot()
+    def do_refresh_devices(self) -> None:
+        sp = self._get_sp()
+        if sp is None:
+            return
+        try:
+            self.devices_loaded.emit(self._list_devices(sp))
+        except Exception as exc:
+            self.error.emit(f"Device refresh error: {exc}")
 
     @Slot(str)
     def do_search(self, query: str) -> None:
@@ -346,7 +370,8 @@ class _SpotifyWorker(QObject):
         if sp is None:
             return
         try:
-            sp.start_playback(uris=[uri])
+            device_id = self._ensure_playback_device(sp)
+            sp.start_playback(device_id=device_id, uris=[uri])
             self.command_done.emit("▶ Playing")
             QTimer.singleShot(600, self._poll_playback)
         except Exception as exc:
@@ -359,7 +384,8 @@ class _SpotifyWorker(QObject):
         if sp is None:
             return
         try:
-            sp.start_playback(context_uri=context_uri)
+            device_id = self._ensure_playback_device(sp)
+            sp.start_playback(device_id=device_id, context_uri=context_uri)
             self.command_done.emit("▶ Playing playlist")
             QTimer.singleShot(600, self._poll_playback)
         except Exception as exc:
@@ -383,7 +409,8 @@ class _SpotifyWorker(QObject):
         if sp is None:
             return
         try:
-            sp.start_playback()
+            device_id = self._ensure_playback_device(sp)
+            sp.start_playback(device_id=device_id)
             self.command_done.emit("▶ Resumed")
             QTimer.singleShot(400, self._poll_playback)
         except Exception as exc:
@@ -454,6 +481,43 @@ class _SpotifyWorker(QObject):
         with self._lock:
             return self._sp
 
+    def _selected_device(self) -> str:
+        with self._lock:
+            return self._selected_device_id
+
+    def _list_devices(self, sp: "spotipy.Spotify") -> List[dict]:
+        devices = (sp.devices() or {}).get("devices") or []
+        return [device for device in devices if not device.get("is_restricted")]
+
+    def _ensure_playback_device(self, sp: "spotipy.Spotify") -> str:
+        devices = self._list_devices(sp)
+        self.devices_loaded.emit(devices)
+
+        selected_id = self._selected_device()
+        if selected_id:
+            selected = next(
+                (device for device in devices if device.get("id") == selected_id),
+                None,
+            )
+            if selected:
+                if not selected.get("is_active"):
+                    sp.transfer_playback(selected_id, force_play=False)
+                return selected_id
+
+        active = next((device for device in devices if device.get("is_active")), None)
+        if active and active.get("id"):
+            return active["id"]
+
+        fallback = next((device for device in devices if device.get("id")), None)
+        if fallback and fallback.get("id"):
+            device_id = fallback["id"]
+            sp.transfer_playback(device_id, force_play=False)
+            with self._lock:
+                self._selected_device_id = device_id
+            return device_id
+
+        raise RuntimeError(NO_SPOTIFY_DEVICE_MESSAGE)
+
     def _poll_playback(self) -> None:
         sp = self._get_sp()
         if sp is None:
@@ -511,6 +575,8 @@ class SpotifyPanel(QDockWidget):
     _sig_set_vol     = Signal(int)
     _sig_set_shuffle = Signal(bool)
     _sig_set_repeat  = Signal(str)
+    _sig_refresh_devices = Signal()
+    _sig_select_device = Signal(str)
 
     def __init__(
         self,
@@ -617,6 +683,7 @@ class SpotifyPanel(QDockWidget):
         self._worker.playback_updated.connect(self._on_playback_updated)
         self._worker.search_results.connect(self._on_search_results)
         self._worker.playlists_loaded.connect(self._on_playlists_loaded)
+        self._worker.devices_loaded.connect(self._on_devices_loaded)
         self._worker.artwork_loaded.connect(self._on_artwork_loaded)
         self._worker.command_done.connect(
             lambda msg: self.status_message.emit(f"Spotify: {msg}")
@@ -637,6 +704,8 @@ class SpotifyPanel(QDockWidget):
         self._sig_set_vol.connect(self._worker.do_set_volume)
         self._sig_set_shuffle.connect(self._worker.do_set_shuffle)
         self._sig_set_repeat.connect(self._worker.do_set_repeat)
+        self._sig_refresh_devices.connect(self._worker.do_refresh_devices)
+        self._sig_select_device.connect(self._worker.do_select_device)
 
         self._thread.start()
 
@@ -687,6 +756,30 @@ class SpotifyPanel(QDockWidget):
 
         layout.addLayout(status_row)
 
+        device_row = QHBoxLayout()
+        device_row.setSpacing(5)
+
+        device_label = QLabel("Device")
+        device_label.setStyleSheet(f"color: {MUTED}; font-size: 10px;")
+        device_row.addWidget(device_label)
+
+        self._device_combo = QComboBox()
+        self._device_combo.setToolTip(
+            "Choose the Spotify Connect device Ceres should control"
+        )
+        self._device_combo.setEnabled(False)
+        self._device_combo.currentIndexChanged.connect(self._on_device_selected)
+        device_row.addWidget(self._device_combo, 1)
+
+        self._refresh_devices_btn = QPushButton("Refresh")
+        self._refresh_devices_btn.setFixedWidth(76)
+        self._refresh_devices_btn.setToolTip("Refresh Spotify Connect devices")
+        self._refresh_devices_btn.setEnabled(False)
+        self._refresh_devices_btn.clicked.connect(self._on_refresh_devices)
+        device_row.addWidget(self._refresh_devices_btn)
+
+        layout.addLayout(device_row)
+
         # ── Credentials warning (hidden when creds present) ─────────────────
         cid, csec, _ = self._load_credentials()
         if not (cid and csec):
@@ -727,7 +820,7 @@ class SpotifyPanel(QDockWidget):
         info_row = QHBoxLayout()
         info_row.setSpacing(10)
 
-        self._art_label = QLabel("🎵")
+        self._art_label = QLabel("")
         self._art_label.setFixedSize(ALBUM_ART_SIZE, ALBUM_ART_SIZE)
         self._art_label.setAlignment(Qt.AlignmentFlag.AlignCenter)  # type: ignore[attr-defined]
         self._art_label.setStyleSheet(
@@ -781,37 +874,41 @@ class SpotifyPanel(QDockWidget):
 
         # Playback control row
         ctrl_row = QHBoxLayout()
-        ctrl_row.setSpacing(4)
+        ctrl_row.setSpacing(2)
 
-        self._prev_btn = QPushButton("⏮")
-        self._prev_btn.setFixedSize(34, 30)
+        self._prev_btn = QPushButton("|<")
+        self._prev_btn.setFixedSize(28, 22)
+        self._prev_btn.setProperty("class", "media-control")
         self._prev_btn.setToolTip("Previous track")
         self._prev_btn.clicked.connect(self._on_prev)
 
         self._play_btn = QPushButton("▶")
-        self._play_btn.setFixedSize(42, 30)
-        self._play_btn.setProperty("class", "accent")
+        self._play_btn.setFixedSize(34, 22)
+        self._play_btn.setProperty("class", "media-control-primary")
         self._play_btn.setToolTip("Play / Pause  (Space)")
         self._play_btn.clicked.connect(self._on_play_pause)
 
-        self._next_btn = QPushButton("⏭")
-        self._next_btn.setFixedSize(34, 30)
+        self._next_btn = QPushButton(">|")
+        self._next_btn.setFixedSize(28, 22)
+        self._next_btn.setProperty("class", "media-control")
         self._next_btn.setToolTip("Next track")
         self._next_btn.clicked.connect(self._on_next)
 
         for b in (self._prev_btn, self._play_btn, self._next_btn):
             ctrl_row.addWidget(b)
 
-        ctrl_row.addSpacing(8)
+        ctrl_row.addSpacing(5)
 
         self._shuffle_btn = QPushButton("⇌")
-        self._shuffle_btn.setFixedSize(34, 30)
+        self._shuffle_btn.setFixedSize(28, 22)
+        self._shuffle_btn.setProperty("class", "media-control")
         self._shuffle_btn.setCheckable(True)
         self._shuffle_btn.setToolTip("Toggle shuffle")
         self._shuffle_btn.clicked.connect(self._on_shuffle)
 
         self._repeat_btn = QPushButton("↻")
-        self._repeat_btn.setFixedSize(34, 30)
+        self._repeat_btn.setFixedSize(28, 22)
+        self._repeat_btn.setProperty("class", "media-control")
         self._repeat_btn.setToolTip("Cycle repeat: off → playlist → track")
         self._repeat_btn.clicked.connect(self._on_repeat)
 
@@ -1005,6 +1102,8 @@ class SpotifyPanel(QDockWidget):
         self._connect_btn.setText("Disconnect")
         self._connect_btn.setEnabled(True)
         self._set_controls_enabled(True)
+        self._device_combo.setEnabled(True)
+        self._refresh_devices_btn.setEnabled(True)
         self._progress_timer.start()
         self.status_message.emit(f"Spotify: connected as {display_name}")
 
@@ -1022,6 +1121,7 @@ class SpotifyPanel(QDockWidget):
             self._album_label.setText("")
             self._time_label.setText("0:00 / 0:00")
             self._progress_bar.setValue(0)
+            self._art_label.clear()
             self._play_btn.setText("▶")
             self._is_playing = False
             return
@@ -1045,7 +1145,7 @@ class SpotifyPanel(QDockWidget):
         self._album_label.setText(album_name)
 
         self._update_progress_display()
-        self._play_btn.setText("⏸" if self._is_playing else "▶")
+        self._play_btn.setText("||" if self._is_playing else "▶")
 
         # Shuffle / Repeat sync
         self._shuffle_on  = state.get("shuffle_state", False)
@@ -1092,6 +1192,37 @@ class SpotifyPanel(QDockWidget):
             item = QListWidgetItem(p["name"])
             item.setData(Qt.ItemDataRole.UserRole, p["uri"])  # type: ignore[attr-defined]
             self._playlist_list.addItem(item)
+
+    def _on_devices_loaded(self, devices: list) -> None:
+        current_id = self._device_combo.currentData()
+        self._device_combo.blockSignals(True)
+        self._device_combo.clear()
+        if not devices:
+            self._device_combo.addItem("Open Spotify, then refresh", "")
+            self._device_combo.setToolTip(NO_SPOTIFY_DEVICE_MESSAGE)
+        else:
+            self._device_combo.setToolTip(
+                "Choose the Spotify Connect device Ceres should control"
+            )
+            active_index = 0
+            current_index = -1
+            for index, device in enumerate(devices):
+                name = device.get("name") or "Spotify device"
+                device_type = device.get("type") or "device"
+                suffix = " - active" if device.get("is_active") else ""
+                self._device_combo.addItem(
+                    f"{name} ({device_type}){suffix}",
+                    device.get("id", ""),
+                )
+                if device.get("id") == current_id:
+                    current_index = index
+                elif device.get("is_active"):
+                    active_index = index
+            if current_index >= 0:
+                active_index = current_index
+            self._device_combo.setCurrentIndex(active_index)
+        self._device_combo.blockSignals(False)
+        self._sig_select_device.emit(str(self._device_combo.currentData() or ""))
 
     def _on_artwork_loaded(self, url: str, data: bytes) -> None:
         try:
@@ -1150,18 +1281,30 @@ class SpotifyPanel(QDockWidget):
         self._status_label.setText("Not connected")
         self._connect_btn.setText("Connect")
         self._set_controls_enabled(False)
+        self._device_combo.blockSignals(True)
+        self._device_combo.clear()
+        self._device_combo.blockSignals(False)
+        self._device_combo.setEnabled(False)
+        self._refresh_devices_btn.setEnabled(False)
         # Clear Now Playing display
         self._track_label.setText("— not playing —")
         self._artist_label.setText("")
         self._album_label.setText("")
         self._art_label.clear()
-        self._art_label.setText("🎵")
         self._art_label.setStyleSheet(
             f"background: {SURFACE}; border: 1px solid {BORDER};"
             f"border-radius: 4px; font-size: 28px; color: {MUTED};"
         )
         self._progress_bar.setValue(0)
         self._time_label.setText("0:00 / 0:00")
+
+    def _on_refresh_devices(self) -> None:
+        self._sig_refresh_devices.emit()
+        self.status_message.emit("Spotify: refreshing Connect devices")
+
+    def _on_device_selected(self, _index: int) -> None:
+        device_id = str(self._device_combo.currentData() or "")
+        self._sig_select_device.emit(device_id)
 
     def _on_search(self) -> None:
         query = self._search_input.text().strip()
@@ -1456,12 +1599,15 @@ class SpotifyPanel(QDockWidget):
         }
         self._repeat_btn.setText(icons.get(self._repeat_mode, "↻"))
         self._repeat_btn.setToolTip(tips.get(self._repeat_mode, "Repeat"))
-        if self._repeat_mode != "off":
-            self._repeat_btn.setStyleSheet(
-                f"QPushButton {{ color: {ACCENT}; font-weight: bold; }}"
-            )
-        else:
-            self._repeat_btn.setStyleSheet("")
+        next_class = (
+            "media-control-primary"
+            if self._repeat_mode != "off"
+            else "media-control"
+        )
+        if self._repeat_btn.property("class") != next_class:
+            self._repeat_btn.setProperty("class", next_class)
+            self._repeat_btn.style().unpolish(self._repeat_btn)
+            self._repeat_btn.style().polish(self._repeat_btn)
 
     def _update_progress_display(self) -> None:
         if self._duration_ms > 0:
