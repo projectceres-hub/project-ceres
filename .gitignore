@@ -11,6 +11,7 @@ settings.json
 vaults.json
 .tidal_token.json
 .youtube_token.json
+.spotipyoauthcache
 
 # API keys / secrets — never commit these
 *.txt
