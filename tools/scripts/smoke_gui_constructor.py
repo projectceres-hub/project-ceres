@@ -32,10 +32,10 @@ def main() -> int:
 
     try:
         from PyQt5.QtWidgets import QApplication
-        from PyQt5.QtCore import Qt
+        from PyQt5.QtCore import Qt, QSettings
     except ImportError:
         from PySide6.QtWidgets import QApplication  # type: ignore
-        from PySide6.QtCore import Qt  # type: ignore
+        from PySide6.QtCore import Qt, QSettings  # type: ignore
 
     from assistant import initialize_application, register_all_commands, run_command
 
@@ -59,45 +59,65 @@ def main() -> int:
         scheduler_context,
         history_manager,
     )
-    window = MainWindow(config, run_command)
-
-    menu_titles = [action.text().replace("&", "") for action in window.menuBar().actions()]
-    expected_order = ["File", "Tools", "View", "Modules", "Help"]
-    if menu_titles[:5] != expected_order:
-        raise AssertionError(f"Unexpected menu order: {menu_titles[:5]}")
-
-    tools_menu = next(
-        (action.menu() for action in window.menuBar().actions() if action.text().replace("&", "") == "Tools"),
-        None,
-    )
-    if tools_menu is None:
-        raise AssertionError("Tools menu missing")
-
-    tool_actions = [action.text().replace("&", "") for action in tools_menu.actions()]
-    if "PDF Importer..." not in tool_actions:
-        raise AssertionError(f"PDF Importer action missing from Tools menu: {tool_actions}")
-
-    left_docks = [
-        window._chat_dock,
-        window._vault_panel,
-        window._mixer_panel,
-        window._eq_panel,
+    settings = QSettings("ProjectCeres", "GMAssistant")
+    isolated_setting_keys = [
+        "geometry",
+        "windowState",
+        "layoutStateVersion",
+        "panelVisibility",
     ]
-    for dock in left_docks:
-        if window.dockWidgetArea(dock) != Qt.DockWidgetArea.LeftDockWidgetArea:
-            raise AssertionError(f"{dock.objectName()} is not in the left dock area")
+    saved_settings = {key: settings.value(key) for key in isolated_setting_keys}
+    for key in isolated_setting_keys:
+        settings.remove(key)
+    settings.sync()
+    window = None
+    try:
+        window = MainWindow(config, run_command)
 
-    if window._spotify_panel not in window.tabifiedDockWidgets(window._discord_panel):
-        raise AssertionError("Spotify is no longer tabified with Discord")
-    if window._soundboard_panel not in window.tabifiedDockWidgets(window._spotify_panel):
-        raise AssertionError("Soundboard is no longer in the right-side media tab group")
+        menu_titles = [action.text().replace("&", "") for action in window.menuBar().actions()]
+        expected_order = ["File", "Tools", "View", "Modules", "Help"]
+        if menu_titles[:5] != expected_order:
+            raise AssertionError(f"Unexpected menu order: {menu_titles[:5]}")
 
-    print("GUI constructor smoke OK.")
-    print(f"Registered commands: {len(config.commands)}")
-    print(f"Window title: {window.windowTitle()}")
+        tools_menu = next(
+            (action.menu() for action in window.menuBar().actions() if action.text().replace("&", "") == "Tools"),
+            None,
+        )
+        if tools_menu is None:
+            raise AssertionError("Tools menu missing")
 
-    window.close()
-    app.quit()
+        tool_actions = [action.text().replace("&", "") for action in tools_menu.actions()]
+        if "PDF Importer..." not in tool_actions:
+            raise AssertionError(f"PDF Importer action missing from Tools menu: {tool_actions}")
+
+        left_docks = [
+            window._chat_dock,
+            window._vault_panel,
+            window._mixer_panel,
+            window._eq_panel,
+        ]
+        for dock in left_docks:
+            if window.dockWidgetArea(dock) != Qt.DockWidgetArea.LeftDockWidgetArea:
+                raise AssertionError(f"{dock.objectName()} is not in the left dock area")
+
+        if window._spotify_panel not in window.tabifiedDockWidgets(window._discord_panel):
+            raise AssertionError("Spotify is no longer tabified with Discord")
+        if window._soundboard_panel not in window.tabifiedDockWidgets(window._spotify_panel):
+            raise AssertionError("Soundboard is no longer in the right-side media tab group")
+
+        print("GUI constructor smoke OK.")
+        print(f"Registered commands: {len(config.commands)}")
+        print(f"Window title: {window.windowTitle()}")
+    finally:
+        if window is not None:
+            window.close()
+        for key in isolated_setting_keys:
+            settings.remove(key)
+        for key, value in saved_settings.items():
+            if value is not None:
+                settings.setValue(key, value)
+        settings.sync()
+        app.quit()
     return 0
 
 

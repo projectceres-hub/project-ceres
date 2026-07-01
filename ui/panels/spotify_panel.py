@@ -49,7 +49,9 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 import urllib.request
+from urllib.parse import urlparse, urlunparse
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -79,11 +81,19 @@ from pantheon.vervactor.workspace import load_scene_data, save_scene_data
 
 try:
     import spotipy
-    from spotipy.oauth2 import SpotifyOAuth
+    from spotipy.oauth2 import (
+        SpotifyOAuth,
+        SpotifyOauthError,
+        SpotifyStateError,
+        start_local_http_server,
+    )
     SPOTIPY_AVAILABLE = True
 except ImportError:
     spotipy = None        # type: ignore[assignment]
     SpotifyOAuth = None   # type: ignore[assignment, misc]
+    SpotifyOauthError = Exception  # type: ignore[assignment, misc]
+    SpotifyStateError = Exception  # type: ignore[assignment, misc]
+    start_local_http_server = None  # type: ignore[assignment, misc]
     SPOTIPY_AVAILABLE = False
 
 # ── Constants ──────────────────────────────────────────────────────────────────
@@ -117,6 +127,7 @@ SCENE_TAGS: List[Tuple[str, str]] = [
 _PROJECT_ROOT      = Path(__file__).resolve().parent.parent.parent
 SCENE_CONFIG_PATH  = _PROJECT_ROOT / "scene_playlists.json"
 SPOTIFY_CACHE_PATH = str(_PROJECT_ROOT / ".spotipyoauthcache")
+SPOTIFY_LOOPBACK_REDIRECT_URI = "http://127.0.0.1:8888/callback"
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -145,6 +156,74 @@ def _normalize_spotify_uri(text: str) -> str:
     return ""
 
 
+def _normalize_loopback_redirect_uri(uri: str) -> str:
+    """Prefer Spotipy's local callback server over console URL prompts."""
+    parsed = urlparse((uri or "").strip())
+    host = parsed.hostname or ""
+    if host not in {"localhost", "127.0.0.1"}:
+        return uri or SPOTIFY_LOOPBACK_REDIRECT_URI
+
+    port = parsed.port or 8888
+    path = parsed.path or "/callback"
+    return urlunparse(("http", f"127.0.0.1:{port}", path, "", parsed.query, ""))
+
+
+def _has_cached_spotify_token(cache_path: str = SPOTIFY_CACHE_PATH) -> bool:
+    try:
+        return Path(cache_path).is_file() and Path(cache_path).stat().st_size > 0
+    except OSError:
+        return False
+
+
+def _should_auto_connect_spotify(
+    client_id: str,
+    client_secret: str,
+    cache_path: str = SPOTIFY_CACHE_PATH,
+) -> bool:
+    """Auto-connect only when OAuth can use an existing cache non-interactively."""
+    return bool(client_id and client_secret and _has_cached_spotify_token(cache_path))
+
+
+if SPOTIPY_AVAILABLE:
+    class _CeresSpotifyOAuth(SpotifyOAuth):  # type: ignore[misc, valid-type]
+        """Spotipy OAuth helper that never falls back to blocking console input."""
+
+        def __init__(self, *args, cancel_event: threading.Event, **kwargs) -> None:
+            super().__init__(*args, **kwargs)
+            self._cancel_event = cancel_event
+
+        def _get_auth_response_interactive(self, open_browser=False):
+            raise SpotifyOauthError(
+                "Spotify redirect URI must be a loopback HTTP URL such as "
+                f"{SPOTIFY_LOOPBACK_REDIRECT_URI}."
+            )
+
+        def _get_auth_response_local_server(self, redirect_port):
+            if start_local_http_server is None:
+                raise SpotifyOauthError("Spotipy local callback server is unavailable.")
+            server = start_local_http_server(redirect_port)
+            server.timeout = 0.5
+            self._open_auth_url()
+
+            deadline = time.monotonic() + 180
+            while not self._cancel_event.is_set() and time.monotonic() < deadline:
+                server.handle_request()
+                if server.error is not None or server.auth_code is not None:
+                    break
+
+            if self._cancel_event.is_set():
+                raise SpotifyOauthError("Spotify authentication cancelled.")
+            if server.error is not None:
+                raise server.error
+            if self.state is not None and server.state != self.state:
+                raise SpotifyStateError(self.state, server.state)
+            if server.auth_code is not None:
+                return server.auth_code
+            raise SpotifyOauthError("Spotify authentication timed out.")
+else:
+    _CeresSpotifyOAuth = None  # type: ignore[assignment]
+
+
 # ── Background worker ──────────────────────────────────────────────────────────
 
 class _SpotifyWorker(QObject):
@@ -167,6 +246,7 @@ class _SpotifyWorker(QObject):
         super().__init__(parent)
         self._sp: Optional["spotipy.Spotify"] = None
         self._lock = threading.Lock()
+        self._cancel_auth = threading.Event()
         self._last_artwork_url = ""
         self._poll_timer: Optional[QTimer] = None   # created lazily in do_connect
 
@@ -180,13 +260,15 @@ class _SpotifyWorker(QObject):
             )
             return
         try:
-            auth_manager = SpotifyOAuth(
+            self._cancel_auth.clear()
+            auth_manager = _CeresSpotifyOAuth(
                 client_id=client_id,
                 client_secret=client_secret,
-                redirect_uri=redirect_uri,
+                redirect_uri=_normalize_loopback_redirect_uri(redirect_uri),
                 scope=SPOTIFY_SCOPE,
                 cache_path=SPOTIFY_CACHE_PATH,
                 open_browser=True,
+                cancel_event=self._cancel_auth,
             )
             sp = spotipy.Spotify(auth_manager=auth_manager)
             # Triggers actual auth — may open browser + block for callback
@@ -208,11 +290,15 @@ class _SpotifyWorker(QObject):
 
     @Slot()
     def do_disconnect(self) -> None:
+        self._cancel_auth.set()
         if self._poll_timer:
             self._poll_timer.stop()
         with self._lock:
             self._sp = None
         self.command_done.emit("Disconnected")
+
+    def cancel_pending_auth(self) -> None:
+        self._cancel_auth.set()
 
     @Slot(str)
     def do_search(self, query: str) -> None:
@@ -466,7 +552,7 @@ class SpotifyPanel(QDockWidget):
 
         # Auto-connect on launch if credentials are present
         cid, csec, ruri = self._load_credentials()
-        if cid and csec:
+        if _should_auto_connect_spotify(cid, csec):
             QTimer.singleShot(1200, lambda: self._do_connect(cid, csec, ruri))
 
     # ── Credentials ───────────────────────────────────────────────────────────
@@ -498,7 +584,7 @@ class SpotifyPanel(QDockWidget):
                     break
                 here = here.parent
 
-        return cid, csec, ruri or "http://localhost:8888/callback"
+        return cid, csec, _normalize_loopback_redirect_uri(ruri or SPOTIFY_LOOPBACK_REDIRECT_URI)
 
     # ── Scene config persistence ──────────────────────────────────────────────
 
@@ -608,7 +694,7 @@ class SpotifyPanel(QDockWidget):
                 "⚠  Add to variables.env:\n"
                 "  SPOTIFY_CLIENT_ID=...\n"
                 "  SPOTIFY_CLIENT_SECRET=...\n"
-                "  SPOTIFY_REDIRECT_URI=http://localhost:8888/callback\n"
+                f"  SPOTIFY_REDIRECT_URI={SPOTIFY_LOOPBACK_REDIRECT_URI}\n"
                 "  (create app at developer.spotify.com/dashboard)"
             )
             warn.setStyleSheet(
@@ -1042,10 +1128,10 @@ class SpotifyPanel(QDockWidget):
                 "Add your Spotify app credentials to variables.env:\n\n"
                 "  SPOTIFY_CLIENT_ID=<your_client_id>\n"
                 "  SPOTIFY_CLIENT_SECRET=<your_client_secret>\n"
-                "  SPOTIFY_REDIRECT_URI=http://localhost:8888/callback\n\n"
+                f"  SPOTIFY_REDIRECT_URI={SPOTIFY_LOOPBACK_REDIRECT_URI}\n\n"
                 "Create a Spotify Developer app at:\n"
                 "  https://developer.spotify.com/dashboard\n\n"
-                "Add  http://localhost:8888/callback  as a Redirect URI in the app settings.",
+                f"Add  {SPOTIFY_LOOPBACK_REDIRECT_URI}  as a Redirect URI in the app settings.",
             )
             return
 
@@ -1401,6 +1487,9 @@ class SpotifyPanel(QDockWidget):
         self._progress_timer.stop()
         if hasattr(self, "_thread") and self._thread.isRunning():
             self._sig_disconnect.emit()
+            if self._worker is not None:
+                self._worker.cancel_pending_auth()
             self._thread.quit()
-            self._thread.wait(2000)
+            if not self._thread.wait(3000):
+                self.status_message.emit("Spotify: shutdown timed out while authentication was pending.")
         super().closeEvent(event)

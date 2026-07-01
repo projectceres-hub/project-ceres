@@ -13,20 +13,21 @@ Panel slots (initial layout):
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Callable, Optional
 
 try:
     from PyQt5.QtWidgets import (
         QApplication, QMainWindow, QWidget, QLabel, QStatusBar, QMenuBar,
-        QAction, QSizePolicy, QDockWidget, QMessageBox, QTabBar,
+        QAction, QSizePolicy, QDockWidget, QMessageBox, QTabBar, QVBoxLayout,
     )
     from PyQt5.QtCore import Qt, QSize, QSettings, QRect
     from PyQt5.QtGui import QFont, QIcon, QPalette, QColor
 except ImportError:
     from PySide6.QtWidgets import (  # type: ignore
         QApplication, QMainWindow, QWidget, QLabel, QStatusBar, QMenuBar,
-        QAction, QSizePolicy, QDockWidget, QMessageBox, QTabBar,
+        QAction, QSizePolicy, QDockWidget, QMessageBox, QTabBar, QVBoxLayout,
     )
     from PySide6.QtCore import Qt, QSize, QSettings, QRect  # type: ignore
     from PySide6.QtGui import QFont, QIcon, QPalette, QColor  # type: ignore
@@ -129,6 +130,7 @@ class MainWindow(QMainWindow):
         self._build_menu_bar()
         self._build_status_bar()
         self._restore_geometry()
+        self._restore_panel_visibility()
         self._apply_tab_icons()   # must run AFTER restoreState() rebuilds tab bars
 
     # ── Central widget — placeholder (Ceres Chat is dockable) ─────────────────
@@ -139,7 +141,17 @@ class MainWindow(QMainWindow):
         movable docks can be dropped around it when the GM wants more room.
         """
         placeholder = QWidget()
+        placeholder.setMaximumWidth(0)
+        placeholder.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
         placeholder.setStyleSheet(f"QWidget {{ background: {BG}; }}")
+        layout = QVBoxLayout(placeholder)
+        layout.setContentsMargins(0, 0, 0, 0)
+        label = QLabel("Open a module to get started")
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)  # type: ignore[attr-defined]
+        label.setMinimumSize(0, 0)
+        label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+        label.setStyleSheet(f"color: {MUTED}; font-size: 18px;")
+        layout.addWidget(label)
         self.setCentralWidget(placeholder)
 
     # ── Panels ─────────────────────────────────────────────────────────────────
@@ -197,7 +209,7 @@ class MainWindow(QMainWindow):
         self._discord_panel.spotify_command.connect(self._spotify_panel.handle_command)
 
         # 5. Soundboard — right side, tabbed below Discord/Spotify
-        self._soundboard_panel = SoundboardPanel(self)
+        self._soundboard_panel = SoundboardPanel(self, config=self._config)
         self._soundboard_panel.status_message.connect(self._set_status)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._soundboard_panel)  # type: ignore[attr-defined]
         self.tabifyDockWidget(self._spotify_panel, self._soundboard_panel)
@@ -517,6 +529,7 @@ class MainWindow(QMainWindow):
         # Console visibility
         if getattr(self._config, "console_hidden_default", True):
             self._console_panel.hide()
+        self._soundboard_panel.reload_configured_folders()
         # (Other live changes — vault path, FGU root — take effect on next command use)
         self._set_status("Preferences saved.")
         # Clear the chat agent's client so it re-reads the (possibly new) API key
@@ -660,6 +673,62 @@ class MainWindow(QMainWindow):
         settings.setValue("geometry", self.saveGeometry())
         settings.setValue("windowState", self.saveState())
         settings.setValue("layoutStateVersion", self.LAYOUT_STATE_VERSION)
+        self._save_panel_visibility(settings)
+
+    def _dock_visibility_panels(self):
+        return {
+            "CeresChat": self._chat_dock,
+            "VaultNotes": self._vault_panel,
+            "Console": self._console_panel,
+            "Discord": self._discord_panel,
+            "Spotify": self._spotify_panel,
+            "AudioConsole": self._soundboard_panel,
+            "FantasyGrounds": self._fgu_panel,
+            "Scheduler": self._scheduler_panel,
+            "Browser": self._browser_panel,
+            "Syrinscape": self._syrinscape_panel,
+            "YouTube": self._youtube_panel,
+            "Tidal": self._tidal_panel,
+            "LocalMusic": self._local_music_panel,
+            "NowPlaying": self._now_playing_panel,
+            "Equalizer": self._eq_panel,
+            "Visualiser": self._visualiser_panel,
+            "PlexJellyfin": self._plex_jellyfin_panel,
+            "Mixer": self._mixer_panel,
+        }
+
+    def _save_panel_visibility(self, settings: Optional[QSettings] = None) -> None:
+        """Persist open/closed dock state independently of Qt's full layout blob."""
+        settings = settings or QSettings("ProjectCeres", "GMAssistant")
+        visibility = {
+            key: dock.toggleViewAction().isChecked()
+            for key, dock in self._dock_visibility_panels().items()
+        }
+        if not any(visibility.values()):
+            return
+        settings.setValue("panelVisibility", json.dumps(visibility, sort_keys=True))
+
+    def _restore_panel_visibility(self) -> None:
+        """Restore dock visibility even when saved windowState is skipped."""
+        settings = QSettings("ProjectCeres", "GMAssistant")
+        raw = settings.value("panelVisibility", "", type=str)
+        if not raw:
+            return
+        try:
+            visibility = json.loads(raw)
+        except (TypeError, ValueError):
+            return
+        if not isinstance(visibility, dict):
+            return
+        if not any(bool(value) for value in visibility.values()):
+            settings.remove("panelVisibility")
+            return
+        for key, dock in self._dock_visibility_panels().items():
+            title = dock.windowTitle()
+            if key in visibility:
+                dock.setVisible(bool(visibility[key]))
+            elif title in visibility:
+                dock.setVisible(bool(visibility[title]))
 
     def _restored_geometry_is_visible(self) -> bool:
         """Check whether restored geometry leaves the window on a real screen."""

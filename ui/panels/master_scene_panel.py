@@ -24,6 +24,7 @@ try:
         QDialog,
         QDialogButtonBox,
         QLineEdit,
+        QComboBox,
         QFormLayout,
         QSizePolicy,
         QFrame,
@@ -43,6 +44,7 @@ except ImportError:
         QDialog,
         QDialogButtonBox,
         QLineEdit,
+        QComboBox,
         QFormLayout,
         QSizePolicy,
         QFrame,
@@ -85,14 +87,120 @@ def _dialog_accepted(result: int) -> bool:
     return False
 
 
-class _SceneEditDialog(QDialog):
-    """Edit one master scene slot — name plus per-panel assignment strings."""
+def _dedupe_options(options: List[tuple[str, str]]) -> List[tuple[str, str]]:
+    seen: set[str] = set()
+    out: List[tuple[str, str]] = []
+    for label, value in options:
+        value = str(value or "").strip()
+        label = str(label or value).strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        out.append((label, value))
+    return out
 
-    def __init__(self, scene: Dict[str, Any], parent=None) -> None:
+
+def _scene_picker_options(panel_refs: Dict[str, Any]) -> Dict[str, List[tuple[str, str]]]:
+    """Return selectable scene assignments discovered from live media panels."""
+    choices: Dict[str, List[tuple[str, str]]] = {
+        key: []
+        for key in (
+            "spotify_playlist_id",
+            "syrinscape_mood",
+            "soundboard_scene",
+            "youtube_scene",
+            "tidal_scene",
+            "local_music_scene",
+            "plex_jellyfin_track",
+        )
+    }
+
+    spotify = getattr(panel_refs.get("spotify"), "_scene_config", {}) or {}
+    for slot, assignment in spotify.items():
+        if isinstance(assignment, dict) and assignment.get("uri"):
+            name = assignment.get("name") or slot
+            choices["spotify_playlist_id"].append((f"{slot}: {name}", assignment["uri"]))
+
+    syrinscape = getattr(panel_refs.get("syrinscape"), "_scene_config", {}) or {}
+    for slot, assignment in syrinscape.items():
+        if isinstance(assignment, dict) and assignment.get("mood_name"):
+            mood = assignment["mood_name"]
+            soundset = assignment.get("soundset_name", "")
+            label = f"{slot}: {soundset} - {mood}" if soundset else f"{slot}: {mood}"
+            choices["syrinscape_mood"].append((label, mood))
+
+    soundboard_scenes = getattr(panel_refs.get("soundboard"), "_scenes", []) or []
+    for scene in soundboard_scenes:
+        name = getattr(scene, "name", "")
+        if name:
+            choices["soundboard_scene"].append((name, name))
+
+    youtube = getattr(panel_refs.get("youtube"), "_scene_config", {}) or {}
+    for slot, assignment in youtube.items():
+        if isinstance(assignment, dict) and assignment.get("title"):
+            title = assignment["title"]
+            choices["youtube_scene"].append((f"{slot}: {title}", title))
+
+    tidal = getattr(panel_refs.get("tidal"), "_scene_config", {}) or {}
+    for slot, assignment in tidal.items():
+        if isinstance(assignment, dict) and assignment.get("name"):
+            name = assignment["name"]
+            choices["tidal_scene"].append((f"{slot}: {name}", name))
+
+    local_scenes = getattr(panel_refs.get("local_music"), "_scenes", []) or []
+    for scene in local_scenes:
+        name = getattr(scene, "name", "")
+        path = getattr(scene, "path", "")
+        if name and path:
+            choices["local_music_scene"].append((name, name))
+
+    plex_scenes = getattr(panel_refs.get("plex_jellyfin"), "_scenes", []) or []
+    for index, scene in enumerate(plex_scenes, start=1):
+        track = scene.get("track") if isinstance(scene, dict) else None
+        if isinstance(track, dict) and track.get("title"):
+            title = track["title"]
+            choices["plex_jellyfin_track"].append((f"Scene {index}: {title}", title))
+
+    return {key: _dedupe_options(value) for key, value in choices.items()}
+
+
+def _make_scene_combo(current_value: str, options: List[tuple[str, str]]) -> QComboBox:
+    combo = QComboBox()
+    combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    combo.addItem("(none)", "")
+    for label, value in options:
+        combo.addItem(label, value)
+    current_value = str(current_value or "").strip()
+    if current_value:
+        idx = combo.findData(current_value)
+        if idx < 0:
+            combo.addItem(f"Current: {current_value}", current_value)
+            idx = combo.findData(current_value)
+        combo.setCurrentIndex(idx)
+    return combo
+
+
+def _combo_value(combo: QComboBox) -> str:
+    data = combo.currentData()
+    if data is None:
+        return combo.currentText().strip()
+    return str(data).strip()
+
+
+class _SceneEditDialog(QDialog):
+    """Edit one master scene slot with real per-panel scene choices."""
+
+    def __init__(
+        self,
+        scene: Dict[str, Any],
+        panel_refs: Dict[str, Any] | None = None,
+        parent=None,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Edit Campaign Scene")
         self.setModal(True)
         self._scene: Dict[str, Any] = {}
+        self._choices = _scene_picker_options(panel_refs or {})
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
@@ -100,25 +208,46 @@ class _SceneEditDialog(QDialog):
         self._name_edit = QLineEdit(scene.get("name", "") or "")
         form.addRow("Name", self._name_edit)
 
-        self._spotify_edit = QLineEdit(scene.get("spotify_playlist_id", "") or "")
+        self._spotify_edit = _make_scene_combo(
+            scene.get("spotify_playlist_id", "") or "",
+            self._choices["spotify_playlist_id"],
+        )
         form.addRow("Spotify playlist ID/URI", self._spotify_edit)
 
-        self._syrin_edit = QLineEdit(scene.get("syrinscape_mood", "") or "")
+        self._syrin_edit = _make_scene_combo(
+            scene.get("syrinscape_mood", "") or "",
+            self._choices["syrinscape_mood"],
+        )
         form.addRow("Syrinscape mood", self._syrin_edit)
 
-        self._sb_edit = QLineEdit(scene.get("soundboard_scene", "") or "")
+        self._sb_edit = _make_scene_combo(
+            scene.get("soundboard_scene", "") or "",
+            self._choices["soundboard_scene"],
+        )
         form.addRow("Soundboard scene", self._sb_edit)
 
-        self._yt_edit = QLineEdit(scene.get("youtube_scene", "") or "")
+        self._yt_edit = _make_scene_combo(
+            scene.get("youtube_scene", "") or "",
+            self._choices["youtube_scene"],
+        )
         form.addRow("YouTube scene/playlist", self._yt_edit)
 
-        self._tidal_edit = QLineEdit(scene.get("tidal_scene", "") or "")
+        self._tidal_edit = _make_scene_combo(
+            scene.get("tidal_scene", "") or "",
+            self._choices["tidal_scene"],
+        )
         form.addRow("Tidal scene/playlist", self._tidal_edit)
 
-        self._local_edit = QLineEdit(scene.get("local_music_scene", "") or "")
+        self._local_edit = _make_scene_combo(
+            scene.get("local_music_scene", "") or "",
+            self._choices["local_music_scene"],
+        )
         form.addRow("Local Music scene", self._local_edit)
 
-        self._plex_edit = QLineEdit(scene.get("plex_jellyfin_track", "") or "")
+        self._plex_edit = _make_scene_combo(
+            scene.get("plex_jellyfin_track", "") or "",
+            self._choices["plex_jellyfin_track"],
+        )
         form.addRow("Plex/Jellyfin track", self._plex_edit)
 
         layout.addLayout(form)
@@ -134,13 +263,13 @@ class _SceneEditDialog(QDialog):
         """Return the edited scene dict (all string fields)."""
         return {
             "name": self._name_edit.text().strip(),
-            "spotify_playlist_id": self._spotify_edit.text().strip(),
-            "syrinscape_mood": self._syrin_edit.text().strip(),
-            "soundboard_scene": self._sb_edit.text().strip(),
-            "youtube_scene": self._yt_edit.text().strip(),
-            "tidal_scene": self._tidal_edit.text().strip(),
-            "local_music_scene": self._local_edit.text().strip(),
-            "plex_jellyfin_track": self._plex_edit.text().strip(),
+            "spotify_playlist_id": _combo_value(self._spotify_edit),
+            "syrinscape_mood": _combo_value(self._syrin_edit),
+            "soundboard_scene": _combo_value(self._sb_edit),
+            "youtube_scene": _combo_value(self._yt_edit),
+            "tidal_scene": _combo_value(self._tidal_edit),
+            "local_music_scene": _combo_value(self._local_edit),
+            "plex_jellyfin_track": _combo_value(self._plex_edit),
         }
 
 
@@ -364,7 +493,7 @@ class MasterScenePanel(QDockWidget):
             self._clear_scene(index)
 
     def _edit_scene(self, index: int) -> None:
-        dlg = _SceneEditDialog(self._scenes[index], self)
+        dlg = _SceneEditDialog(self._scenes[index], self._panel_refs, self)
         if _dialog_accepted(dlg.exec()):  # type: ignore[arg-type]
             self._scenes[index] = dlg.get_scene()
             self._save_scenes()

@@ -8,12 +8,17 @@ os.environ.setdefault("QT_OPENGL", "software")
 os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu --disable-software-rasterizer")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 
-from PyQt5.QtWidgets import QApplication, QDockWidget, QMainWindow
-from PyQt5.QtCore import Qt
+from PyQt5.QtWidgets import QApplication, QDockWidget, QLabel, QMainWindow
+from PyQt5.QtCore import Qt, QSettings
 
 from core.config import Config
 
 import ui.panels.browser_panel as browser_panel
+from ui.panels.spotify_panel import (
+    SPOTIFY_LOOPBACK_REDIRECT_URI,
+    _normalize_loopback_redirect_uri,
+    _should_auto_connect_spotify,
+)
 
 browser_panel._WEBENGINE_OK = False
 
@@ -25,10 +30,15 @@ class MainWindowDockingTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication([sys.argv[0]])
 
-    def _build_window(self) -> MainWindow:
+    def _build_window(self, restore_panel_visibility: bool = False) -> MainWindow:
         config = Config(vaults={"TestVault": "GMAssistantVault"}, current_vault="TestVault")
 
-        with patch.object(MainWindow, "_restore_geometry", lambda self: None):
+        restore_panel_patch = (
+            patch.object(MainWindow, "_restore_panel_visibility", lambda self: None)
+            if not restore_panel_visibility
+            else patch.object(MainWindow, "_restore_panel_visibility", MainWindow._restore_panel_visibility)
+        )
+        with patch.object(MainWindow, "_restore_geometry", lambda self: None), restore_panel_patch:
             return MainWindow(config, lambda _command: "")
 
     def test_default_dock_policy_allows_split_drops_without_user_tab_drops(self) -> None:
@@ -48,6 +58,119 @@ class MainWindowDockingTests(unittest.TestCase):
         self.assertFalse(_should_restore_dock_state(b"old-state", False, 7, 7))
         self.assertFalse(_should_restore_dock_state(None, True, 7, 7))
         self.assertTrue(_should_restore_dock_state(b"current-state", True, 7, 7))
+
+    def test_spotify_loopback_redirect_uses_local_http_callback(self) -> None:
+        self.assertEqual(
+            _normalize_loopback_redirect_uri("https://localhost:8888/callback"),
+            SPOTIFY_LOOPBACK_REDIRECT_URI,
+        )
+        self.assertEqual(
+            _normalize_loopback_redirect_uri("http://localhost:7777/callback"),
+            "http://127.0.0.1:7777/callback",
+        )
+        self.assertNotIn("localhost", SPOTIFY_LOOPBACK_REDIRECT_URI)
+
+    def test_spotify_auto_connect_requires_existing_token_cache(self) -> None:
+        self.assertFalse(
+            _should_auto_connect_spotify("client", "secret", "missing-cache-file")
+        )
+
+    def test_panel_visibility_restores_even_when_window_state_is_skipped(self) -> None:
+        settings = QSettings("ProjectCeres", "GMAssistant")
+        keys = ["geometry", "windowState", "layoutStateVersion", "panelVisibility"]
+        old_values = {key: settings.value(key) for key in keys}
+        try:
+            for key in keys:
+                settings.remove(key)
+            settings.setValue(
+                "panelVisibility",
+                '{"Audio Console": false, "Mixer": false, "Console": true}',
+            )
+            settings.sync()
+
+            window = self._build_window(restore_panel_visibility=True)
+            try:
+                window.show()
+                self.app.processEvents()
+
+                self.assertFalse(window._soundboard_panel.toggleViewAction().isChecked())
+                self.assertFalse(window._mixer_panel.toggleViewAction().isChecked())
+                self.assertTrue(window._console_panel.toggleViewAction().isChecked())
+            finally:
+                window.close()
+                self.app.processEvents()
+        finally:
+            for key in keys:
+                settings.remove(key)
+            for key, value in old_values.items():
+                if value is not None:
+                    settings.setValue(key, value)
+            settings.sync()
+
+    def test_all_hidden_panel_visibility_snapshot_is_ignored(self) -> None:
+        settings = QSettings("ProjectCeres", "GMAssistant")
+        keys = ["geometry", "windowState", "layoutStateVersion", "panelVisibility"]
+        old_values = {key: settings.value(key) for key in keys}
+        try:
+            for key in keys:
+                settings.remove(key)
+            settings.setValue(
+                "panelVisibility",
+                '{"AudioConsole": false, "Mixer": false, "Console": false}',
+            )
+            settings.sync()
+
+            window = self._build_window(restore_panel_visibility=True)
+            try:
+                window.show()
+                self.app.processEvents()
+
+                self.assertTrue(window._soundboard_panel.toggleViewAction().isChecked())
+                self.assertTrue(window._mixer_panel.toggleViewAction().isChecked())
+            finally:
+                window.close()
+                self.app.processEvents()
+        finally:
+            for key in keys:
+                settings.remove(key)
+            for key, value in old_values.items():
+                if value is not None:
+                    settings.setValue(key, value)
+            settings.sync()
+
+    def test_central_workspace_prompts_to_open_a_module(self) -> None:
+        window = self._build_window()
+        try:
+            labels = window.centralWidget().findChildren(QLabel)
+            self.assertTrue(
+                any(label.text() == "Open a module to get started" for label in labels)
+            )
+        finally:
+            window.close()
+
+    def test_all_hidden_panel_visibility_snapshot_is_not_saved(self) -> None:
+        settings = QSettings("ProjectCeres", "GMAssistant")
+        old_value = settings.value("panelVisibility")
+        try:
+            settings.setValue("panelVisibility", '{"AudioConsole": true}')
+            window = self._build_window()
+            try:
+                for dock in window._dock_visibility_panels().values():
+                    dock.hide()
+
+                window._save_panel_visibility(settings)
+
+                self.assertEqual(
+                    settings.value("panelVisibility", "", type=str),
+                    '{"AudioConsole": true}',
+                )
+            finally:
+                window.close()
+        finally:
+            settings.remove("panelVisibility")
+            if old_value is not None:
+                settings.setValue("panelVisibility", old_value)
+            settings.sync()
 
     def test_left_tools_are_real_movable_docks(self) -> None:
         window = self._build_window()
@@ -133,6 +256,17 @@ class MainWindowDockingTests(unittest.TestCase):
             self.assertLessEqual(vault.right() - mixer.x(), 12)
             self.assertLessEqual(mixer.height(), 260)
             self.assertLessEqual(eq.height(), 260)
+        finally:
+            window.close()
+
+    def test_central_workspace_does_not_create_gap_between_dock_columns(self) -> None:
+        window = self._build_window()
+        try:
+            window.resize(1400, 900)
+            window.show()
+            self.app.processEvents()
+
+            self.assertLessEqual(window.centralWidget().width(), 1)
         finally:
             window.close()
 

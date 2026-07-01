@@ -32,25 +32,40 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 try:
+    _QT_BINDING = "PyQt5"
     from PyQt5.QtWidgets import (
         QDockWidget, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
         QPushButton, QLabel, QSlider, QFileDialog, QScrollArea,
         QGroupBox, QSizePolicy, QMessageBox, QTabWidget, QListWidget, QListView,
-        QListWidgetItem, QInputDialog, QSplitter, QFrame,
+        QListWidgetItem, QInputDialog, QSplitter, QFrame, QDial,
     )
-    from PyQt5.QtCore import Qt, QTimer, QSettings, QSize, pyqtSignal as Signal, pyqtSlot as Slot
+    from PyQt5.QtCore import Qt, QTimer, QSettings, QSize, QUrl, pyqtSignal as Signal, pyqtSlot as Slot
     from PyQt5.QtGui import QFont
 except ImportError:
+    _QT_BINDING = "PySide6"
     from PySide6.QtWidgets import (  # type: ignore
         QDockWidget, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
         QPushButton, QLabel, QSlider, QFileDialog, QScrollArea,
         QGroupBox, QSizePolicy, QMessageBox, QTabWidget, QListWidget, QListView,
-        QListWidgetItem, QInputDialog, QSplitter, QFrame,
+        QListWidgetItem, QInputDialog, QSplitter, QFrame, QDial,
     )
-    from PySide6.QtCore import Qt, QTimer, QSettings, QSize, Signal, Slot  # type: ignore
+    from PySide6.QtCore import Qt, QTimer, QSettings, QSize, QUrl, Signal, Slot  # type: ignore
     from PySide6.QtGui import QFont  # type: ignore
 
 from ui.theme import ACCENT, ACCENT2, BG, BORDER, MUTED, TEXT, PANEL, SURFACE, SUCCESS, ERROR
+
+_QT_MEDIA_OK = False
+_QT_MEDIA_API = ""
+try:
+    if _QT_BINDING == "PyQt5":
+        from PyQt5.QtMultimedia import QMediaContent, QMediaPlayer
+        _QT_MEDIA_API = "qt5"
+    else:
+        from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer  # type: ignore
+        _QT_MEDIA_API = "qt6"
+    _QT_MEDIA_OK = True
+except Exception:
+    pass
 
 # ── Audio backend detection ────────────────────────────────────────────────────
 _PYGAME_OK = False
@@ -70,11 +85,11 @@ if sys.platform == "win32":
     except ImportError:
         pass
 
-_AUDIO_AVAILABLE = _PYGAME_OK or _WINSOUND_OK
+_AUDIO_AVAILABLE = _PYGAME_OK or _WINSOUND_OK or _QT_MEDIA_OK
 
 # File types we can play
 AUDIO_EXTENSIONS = {".wav", ".mp3", ".ogg", ".flac", ".m4a"}
-if not _PYGAME_OK:
+if not _PYGAME_OK and not _QT_MEDIA_OK:
     # winsound only handles .wav
     AUDIO_EXTENSIONS = {".wav"}
 
@@ -94,6 +109,8 @@ CATEGORY_ICONS: Dict[str, str] = {
 
 # Number of buttons per row inside a category group
 BUTTONS_PER_ROW = 3
+ELEMENT_PLAY_ICON = "\u25b6"
+ELEMENT_PAUSE_ICON = "\u23f8"
 
 
 def _icon_for_category(name: str) -> str:
@@ -147,7 +164,7 @@ class SoundboardPanel(QDockWidget):
     status_message: Signal = Signal(str)
     volume_changed: Signal = Signal(int)
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, parent: Optional[QWidget] = None, config: Optional[object] = None) -> None:
         super().__init__("🔊  Soundboard", parent)
         self.setObjectName("SoundboardPanel")
         self.setWindowTitle("Audio Console")
@@ -161,6 +178,8 @@ class SoundboardPanel(QDockWidget):
         # ── Sounds tab state ──
         self._sound_folder: Optional[Path] = None
         self._now_playing: Optional[str] = None
+        self._playing_element_key: Optional[str] = None
+        self._paused_element_key: Optional[str] = None
         self._volume: float = 0.8  # 0.0 – 1.0
 
         # ── Scenes tab state ──
@@ -178,11 +197,17 @@ class SoundboardPanel(QDockWidget):
         self._campaign_scene_panel: Optional[QDockWidget] = None
         self._campaign_scene_layout: Optional[QVBoxLayout] = None
         self._element_volume_sliders: Dict[str, QSlider] = {}
+        self._element_volume_knobs: Dict[str, QDial] = {}
         self._element_play_buttons: Dict[str, QPushButton] = {}
         self._element_label_buttons: Dict[str, QPushButton] = {}
         self._element_volume_by_path: Dict[str, int] = {}
+        self._sound_categories: Dict[str, List[Path]] = {}
+        self._selected_soundset_name: str = ""
+        self._qt_media_players: List[object] = []
+        self._qt_audio_outputs: List[object] = []
 
         self._settings = QSettings("ProjectCeres", "GMAssistant")
+        self._config = config
 
         self._build_ui()
         self._show_no_folder_hint()
@@ -285,6 +310,7 @@ class SoundboardPanel(QDockWidget):
             f"QListWidget::item {{ color: {MUTED}; padding: 5px 14px; }}"
             f"QListWidget::item:selected {{ background: {SURFACE}; color: {TEXT}; }}"
         )
+        self._soundset_list_widget.currentItemChanged.connect(self._on_soundset_selected)
         layout.addWidget(self._soundset_list_widget, 1)
         return pane
 
@@ -531,6 +557,8 @@ class SoundboardPanel(QDockWidget):
                 )
             else:
                 self._settings.remove("soundboard/folder")
+        elif self._configured_sound_folders():
+            self._rebuild_board()
 
         # Scenes
         self._load_scenes()
@@ -556,11 +584,49 @@ class SoundboardPanel(QDockWidget):
         self._stop_all()
         self._sound_folder = None
         self._settings.remove("soundboard/folder")
+        self._playing_element_key = None
+        self._paused_element_key = None
+        self._sound_categories.clear()
+        self._selected_soundset_name = ""
         if self._elements_grid_layout is not None:
             self._clear_layout(self._elements_grid_layout)
+        self._element_volume_sliders.clear()
+        self._element_volume_knobs.clear()
+        self._element_play_buttons.clear()
+        self._element_label_buttons.clear()
         if self._soundset_list_widget is not None:
             self._soundset_list_widget.clear()
         self._show_no_folder_hint()
+
+    def reload_configured_folders(self) -> None:
+        """Reload Preferences-managed sound folders alongside any explicit folder."""
+        self._rebuild_board()
+
+    def _configured_sound_folders(self) -> List[Path]:
+        folders = getattr(self._config, "soundboard_folders", []) if self._config is not None else []
+        paths: List[Path] = []
+        for folder in folders:
+            try:
+                path = Path(folder)
+            except TypeError:
+                continue
+            if path.exists() and path.is_dir():
+                paths.append(path)
+        return paths
+
+    def _sound_roots(self) -> List[Path]:
+        roots: List[Path] = []
+        if self._sound_folder is not None:
+            roots.append(self._sound_folder)
+        roots.extend(self._configured_sound_folders())
+        unique_roots: List[Path] = []
+        seen: set[str] = set()
+        for root in roots:
+            key = str(root.resolve())
+            if key not in seen:
+                seen.add(key)
+                unique_roots.append(root)
+        return unique_roots
 
     def _rebuild_board(self) -> None:
         """Scan folder and rebuild soundset list plus Winamp element tiles."""
@@ -570,26 +636,36 @@ class SoundboardPanel(QDockWidget):
 
         self._clear_layout(self._elements_grid_layout)
         self._element_volume_sliders.clear()
+        self._element_volume_knobs.clear()
         self._element_play_buttons.clear()
         self._element_label_buttons.clear()
+        self._sound_categories.clear()
         if self._soundset_list_widget is not None:
+            self._soundset_list_widget.blockSignals(True)
             self._soundset_list_widget.clear()
 
-        if self._sound_folder is None or not self._sound_folder.exists():
+        roots = self._sound_roots()
+        if not roots:
+            if self._soundset_list_widget is not None:
+                self._soundset_list_widget.blockSignals(False)
             self._show_no_folder_hint()
             return
 
         categories: Dict[str, List[Path]] = {}
-        for entry in sorted(self._sound_folder.rglob("*")):
-            if entry.is_file() and entry.suffix.lower() in AUDIO_EXTENSIONS:
-                try:
-                    rel = entry.relative_to(self._sound_folder)
-                    cat = rel.parts[0] if len(rel.parts) > 1 else "General"
-                except ValueError:
-                    cat = "General"
-                categories.setdefault(cat, []).append(entry)
+        for root in roots:
+            for entry in sorted(root.rglob("*")):
+                if entry.is_file() and self._is_audio_file(entry):
+                    try:
+                        rel = entry.relative_to(root)
+                        cat = rel.parts[0] if len(rel.parts) > 1 else "General"
+                    except ValueError:
+                        cat = "General"
+                    categories.setdefault(cat, []).append(entry)
+        self._sound_categories = categories
 
         if not categories:
+            if self._soundset_list_widget is not None:
+                self._soundset_list_widget.blockSignals(False)
             hint = QLabel(f"No audio files found.\nSupported: {', '.join(sorted(AUDIO_EXTENSIONS))}")
             hint.setAlignment(Qt.AlignmentFlag.AlignCenter)  # type: ignore[attr-defined]
             hint.setStyleSheet(f"color: {MUTED};")
@@ -598,19 +674,51 @@ class SoundboardPanel(QDockWidget):
 
         if self._soundset_list_widget is not None:
             for cat_name in sorted(categories):
-                self._soundset_list_widget.addItem(f"{_icon_for_category(cat_name)}  {cat_name}")
+                item = QListWidgetItem(f"{_icon_for_category(cat_name)}  {cat_name}")
+                item.setData(Qt.ItemDataRole.UserRole, cat_name)  # type: ignore[attr-defined]
+                self._soundset_list_widget.addItem(item)
 
-        tile_index = 0
-        for cat_name in sorted(categories):
-            files = categories[cat_name]
-            for path in sorted(files, key=lambda p: p.stem.lower()):
-                tile = self._make_element_tile(path)
-                self._elements_grid_layout.addWidget(
-                    tile,
-                    0,
-                    tile_index,
-                )
-                tile_index += 1
+            selected_row = 0
+            if self._selected_soundset_name in categories:
+                selected_row = sorted(categories).index(self._selected_soundset_name)
+            self._selected_soundset_name = sorted(categories)[selected_row]
+            self._soundset_list_widget.setCurrentRow(selected_row)
+            self._soundset_list_widget.blockSignals(False)
+
+        self._render_selected_soundset()
+
+    def _is_audio_file(self, path: Path) -> bool:
+        return (
+            path.suffix.lower() in AUDIO_EXTENSIONS
+            and not path.name.startswith("._")
+            and not path.name.startswith(".")
+        )
+
+    def _on_soundset_selected(
+        self,
+        current: Optional[QListWidgetItem],
+        previous: Optional[QListWidgetItem],
+    ) -> None:
+        if current is None:
+            return
+        category = current.data(Qt.ItemDataRole.UserRole)  # type: ignore[attr-defined]
+        self._selected_soundset_name = str(category or current.text()).strip()
+        self._render_selected_soundset()
+
+    def _render_selected_soundset(self) -> None:
+        if self._elements_grid_layout is None:
+            return
+
+        self._clear_layout(self._elements_grid_layout)
+        self._element_volume_sliders.clear()
+        self._element_volume_knobs.clear()
+        self._element_play_buttons.clear()
+        self._element_label_buttons.clear()
+
+        files = self._sound_categories.get(self._selected_soundset_name, [])
+        for tile_index, path in enumerate(sorted(files, key=lambda p: p.stem.lower())):
+            tile = self._make_element_tile(path)
+            self._elements_grid_layout.addWidget(tile, 0, tile_index)
 
     def _show_no_folder_hint(self) -> None:
         hint = QLabel('Click "Load Folder" to load your sounds.')
@@ -642,17 +750,21 @@ class SoundboardPanel(QDockWidget):
         knob_col = QVBoxLayout()
         knob_col.setSpacing(4)
 
-        play_btn = QPushButton("▶")
+        play_btn = QPushButton(ELEMENT_PLAY_ICON)
         play_btn.setFixedSize(26, 22)
         play_btn.setToolTip(f"Play {path.name}")
         self._style_element_play_btn(play_btn)
-        play_btn.clicked.connect(lambda checked, p=path: self._play(p))
+        play_btn.clicked.connect(lambda checked, p=path: self._toggle_element_playback(p))
         knob_col.addWidget(play_btn, 0, Qt.AlignmentFlag.AlignCenter)  # type: ignore[attr-defined]
 
-        knob = QLabel()
+        knob = QDial()
         knob.setFixedSize(52, 52)
+        knob.setRange(0, 100)
+        knob.setValue(saved_volume)
+        knob.setWrapping(False)
+        knob.setNotchesVisible(False)
         knob.setStyleSheet(
-            "QLabel {"
+            "QDial {"
             " border-radius: 26px;"
             f" border: 2px solid {BORDER};"
             " background: qradialgradient(cx:0.35, cy:0.3, radius:0.8,"
@@ -660,7 +772,7 @@ class SoundboardPanel(QDockWidget):
             f" border-top-color: {MUTED}; border-left-color: {MUTED};"
             "}"
         )
-        knob.setToolTip("Winamp element control")
+        knob.setToolTip("Element volume")
         knob_col.addWidget(knob, 0, Qt.AlignmentFlag.AlignCenter)  # type: ignore[attr-defined]
         controls.addLayout(knob_col)
 
@@ -671,6 +783,8 @@ class SoundboardPanel(QDockWidget):
         fader.setToolTip("Element volume")
         self._style_vertical_fader(fader)
         fader.valueChanged.connect(lambda value, k=key: self._on_element_volume_changed(k, value))
+        fader.valueChanged.connect(lambda value, dial=knob: self._sync_element_knob(dial, value))
+        knob.valueChanged.connect(lambda value, slider=fader: self._sync_element_fader(slider, value))
         controls.addWidget(fader, 0, Qt.AlignmentFlag.AlignCenter)  # type: ignore[attr-defined]
 
         layout.addLayout(controls)
@@ -689,13 +803,138 @@ class SoundboardPanel(QDockWidget):
         layout.addWidget(pct)
 
         self._element_volume_sliders[key] = fader
+        self._element_volume_knobs[key] = knob
         self._element_play_buttons[key] = play_btn
         self._element_label_buttons[key] = label_btn
+        self._sync_element_button_state(key)
         return tile
+
+    def _toggle_element_playback(self, path: Path) -> None:
+        key = str(path)
+        if self._playing_element_key == key and self._paused_element_key != key:
+            self._pause_current_element()
+            return
+        if self._playing_element_key == key and self._paused_element_key == key:
+            self._resume_current_element()
+            return
+        self._play(path)
+
+    def _pause_current_element(self) -> None:
+        key = self._playing_element_key
+        if key is None:
+            return
+        if _PYGAME_OK:
+            try:
+                pygame.mixer.music.pause()
+            except Exception:
+                pass
+        elif _WINSOUND_OK:
+            try:
+                import winsound  # type: ignore
+                winsound.PlaySound(None, winsound.SND_PURGE)
+            except Exception:
+                pass
+        for player in self._qt_media_players:
+            try:
+                player.pause()
+            except Exception:
+                pass
+        self._paused_element_key = key
+        self._sync_element_button_state(key)
+        self._now_playing_label.setText(f"Paused: {Path(key).name}")
+        self._now_playing_label.setStyleSheet(f"color: {MUTED}; font-size: 10px;")
+        self.status_message.emit(f"Paused: {Path(key).name}")
+
+    def _resume_current_element(self) -> None:
+        key = self._paused_element_key
+        if key is None:
+            return
+        if _PYGAME_OK:
+            try:
+                pygame.mixer.music.unpause()
+            except Exception:
+                pass
+        else:
+            for player in self._qt_media_players:
+                try:
+                    player.play()
+                except Exception:
+                    pass
+        self._paused_element_key = None
+        self._sync_element_button_state(key)
+        self._now_playing = Path(key).name
+        self._now_playing_label.setText(f"▶  {Path(key).name}")
+        self._now_playing_label.setStyleSheet(f"color: {SUCCESS}; font-size: 10px;")
+        self.status_message.emit(f"Playing: {Path(key).name}")
+
+    def _sync_element_button_state(self, key: str) -> None:
+        button = self._element_play_buttons.get(key)
+        if button is None:
+            return
+        is_playing = self._playing_element_key == key and self._paused_element_key != key
+        button.setText(ELEMENT_PAUSE_ICON if is_playing else ELEMENT_PLAY_ICON)
+        button.setToolTip(
+            f"Pause {Path(key).name}" if is_playing else f"Play {Path(key).name}"
+        )
+
+    def _sync_all_element_button_states(self) -> None:
+        for key in self._element_play_buttons:
+            self._sync_element_button_state(key)
 
     def _on_element_volume_changed(self, key: str, value: int) -> None:
         self._element_volume_by_path[key] = value
         self._settings.setValue(f"soundboard/elements/{key}/volume", value)
+        self._update_current_element_volume(key)
+
+    def _sync_element_knob(self, knob: QDial, value: int) -> None:
+        if knob.value() == value:
+            return
+        knob.blockSignals(True)
+        knob.setValue(value)
+        knob.blockSignals(False)
+
+    def _sync_element_fader(self, fader: QSlider, value: int) -> None:
+        if fader.value() == value:
+            return
+        fader.blockSignals(True)
+        fader.setValue(value)
+        fader.blockSignals(False)
+        fader.valueChanged.emit(value)
+
+    def _update_current_element_volume(self, key: str) -> None:
+        path_name = Path(key).name
+        if self._now_playing != path_name:
+            return
+        effective_volume = self._effective_element_volume(Path(key))
+        if _PYGAME_OK:
+            try:
+                pygame.mixer.music.set_volume(effective_volume)
+            except Exception:
+                pass
+        for player in self._qt_media_players:
+            try:
+                if _QT_MEDIA_API == "qt5" and hasattr(player, "setVolume"):
+                    player.setVolume(int(effective_volume * 100))
+                elif _QT_MEDIA_API == "qt6" and hasattr(player, "audioOutput"):
+                    output = player.audioOutput()
+                    if output is not None:
+                        output.setVolume(effective_volume)
+            except Exception:
+                pass
+
+    def _effective_element_volume(self, path: Path) -> float:
+        element_volume = self._element_volume_by_path.get(str(path), 100) / 100.0
+        return max(0.0, min(1.0, self._volume * element_volume))
+
+    def _current_element_key(self) -> Optional[str]:
+        if self._playing_element_key is not None:
+            return self._playing_element_key
+        if not self._now_playing:
+            return None
+        for key in self._element_volume_by_path:
+            if Path(key).name == self._now_playing:
+                return key
+        return None
 
     def _style_element_play_btn(self, btn: QPushButton) -> None:
         btn.setStyleSheet(
@@ -779,14 +1018,81 @@ class SoundboardPanel(QDockWidget):
             elif _WINSOUND_OK and path.suffix.lower() == ".wav":
                 import winsound  # type: ignore
                 winsound.PlaySound(str(path), winsound.SND_FILENAME | winsound.SND_ASYNC)
+            elif not self._play_with_qt_media(path):
+                raise RuntimeError("No supported audio backend for this file")
 
+            previous_key = self._playing_element_key
+            self._playing_element_key = str(path)
+            self._paused_element_key = None
+            if previous_key and previous_key != self._playing_element_key:
+                self._sync_element_button_state(previous_key)
+            self._sync_element_button_state(self._playing_element_key)
             self._now_playing = path.name
             self._now_playing_label.setText(f"▶  {path.name}")
             self._now_playing_label.setStyleSheet(f"color: {SUCCESS}; font-size: 10px;")
             self.status_message.emit(f"Playing: {path.name}")
         except Exception as e:
-            self._now_playing_label.setText(f"Error: {e}")
+            if path.suffix.lower() in {".mp3", ".wav", ".ogg", ".flac", ".m4a"} and self._play_with_qt_media(path):
+                previous_key = self._playing_element_key
+                self._playing_element_key = str(path)
+                self._paused_element_key = None
+                if previous_key and previous_key != self._playing_element_key:
+                    self._sync_element_button_state(previous_key)
+                self._sync_element_button_state(self._playing_element_key)
+                self._now_playing = path.name
+                self._now_playing_label.setText(f"▶  {path.name}")
+                self._now_playing_label.setStyleSheet(f"color: {SUCCESS}; font-size: 10px;")
+                self.status_message.emit(f"Playing: {path.name}")
+                return
+            self._now_playing_label.setText(f"Error: {path.name}")
             self._now_playing_label.setStyleSheet(f"color: {ERROR}; font-size: 10px;")
+            self.status_message.emit(
+                f"Soundboard: {path.name} could not be played; unsupported or corrupt audio file."
+            )
+
+    def _play_with_qt_media(self, path: Path) -> bool:
+        """Fallback for MP3 files pygame rejects but the OS media stack can play."""
+        if not _QT_MEDIA_OK:
+            return False
+        try:
+            if _QT_MEDIA_API == "qt5":
+                player = QMediaPlayer(self)
+                player.setMedia(QMediaContent(QUrl.fromLocalFile(str(path))))  # type: ignore[name-defined]
+                player.setVolume(int(self._effective_element_volume(path) * 100))
+            else:
+                player = QMediaPlayer(self)
+                audio_output = QAudioOutput(self)  # type: ignore[name-defined]
+                audio_output.setVolume(self._effective_element_volume(path))
+                player.setAudioOutput(audio_output)
+                player.setSource(QUrl.fromLocalFile(str(path)))
+                self._qt_audio_outputs.append(audio_output)
+            if hasattr(player, "errorOccurred"):
+                player.errorOccurred.connect(  # type: ignore[attr-defined]
+                    lambda _error, p=path: self._on_qt_media_error(p)
+                )
+            elif hasattr(player, "error"):
+                player.error.connect(  # type: ignore[attr-defined]
+                    lambda _error, p=path: self._on_qt_media_error(p)
+                )
+            self._qt_media_players.append(player)
+            player.play()
+            return True
+        except Exception:
+            return False
+
+    def _on_qt_media_error(self, path: Path) -> None:
+        if self._now_playing != path.name:
+            return
+        key = str(path)
+        if self._playing_element_key == key:
+            self._playing_element_key = None
+            self._paused_element_key = None
+            self._sync_element_button_state(key)
+        self._now_playing_label.setText(f"Error: {path.name}")
+        self._now_playing_label.setStyleSheet(f"color: {ERROR}; font-size: 10px;")
+        self.status_message.emit(
+            f"Soundboard: {path.name} could not be played; unsupported or corrupt audio file."
+        )
 
     def _stop_all(self) -> None:
         if _PYGAME_OK:
@@ -795,18 +1101,34 @@ class SoundboardPanel(QDockWidget):
                 pygame.mixer.stop()
             except Exception:
                 pass
+        for player in self._qt_media_players:
+            try:
+                player.stop()
+            except Exception:
+                pass
+        self._qt_media_players.clear()
+        self._qt_audio_outputs.clear()
         self._now_playing = None
+        self._playing_element_key = None
+        self._paused_element_key = None
+        self._sync_all_element_button_states()
         self._now_playing_label.setText("— idle —")
         self._now_playing_label.setStyleSheet(f"color: {MUTED}; font-size: 10px;")
 
     def _on_volume_changed(self, value: int) -> None:
         self._volume = value / 100.0
         self._settings.setValue("soundboard/volume", value)
+        current_key = self._current_element_key()
         if _PYGAME_OK:
             try:
-                pygame.mixer.music.set_volume(self._volume)
+                if current_key is not None:
+                    pygame.mixer.music.set_volume(self._effective_element_volume(Path(current_key)))
+                else:
+                    pygame.mixer.music.set_volume(self._volume)
             except Exception:
                 pass
+        if current_key is not None:
+            self._update_current_element_volume(current_key)
         self.volume_changed.emit(value)
 
     def get_volume(self) -> int:
@@ -825,11 +1147,17 @@ class SoundboardPanel(QDockWidget):
         self._vol_slider.blockSignals(False)
         self._volume = value / 100.0
         self._settings.setValue("soundboard/volume", value)
+        current_key = self._current_element_key()
         if _PYGAME_OK:
             try:
-                pygame.mixer.music.set_volume(self._volume)
+                if current_key is not None:
+                    pygame.mixer.music.set_volume(self._effective_element_volume(Path(current_key)))
+                else:
+                    pygame.mixer.music.set_volume(self._volume)
             except Exception:
                 pass
+        if current_key is not None:
+            self._update_current_element_volume(current_key)
 
     def set_eq_bands(self, enabled: bool, bands: list) -> None:
         """
