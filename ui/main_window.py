@@ -112,6 +112,8 @@ class MainWindow(QMainWindow):
         super().__init__(parent)
         self._config = config
         self._run_command = run_command
+        self._last_active_dock_tab_key: Optional[str] = None
+        self._panel_visibility_restored = False
 
         self.setWindowTitle(self.APP_NAME)
         self.setMinimumSize(QSize(1100, 900))
@@ -412,6 +414,13 @@ class MainWindow(QMainWindow):
 
     # ── Menu bar ───────────────────────────────────────────────────────────────
 
+    def _dock_key_for_title(self, title: str) -> Optional[str]:
+        docks = self._dock_visibility_panels()
+        for key, dock in docks.items():
+            if dock.windowTitle() == title:
+                return key
+        return title if title in docks else None
+
     def _build_menu_bar(self) -> None:
         mb = self.menuBar()
         mb.setNativeMenuBar(False)  # keep custom style on macOS
@@ -640,6 +649,7 @@ class MainWindow(QMainWindow):
         if not self._panel_visibility_restored_after_show:
             self._panel_visibility_restored_after_show = True
             self._restore_panel_visibility()
+            self._restore_active_dock_tab()
         self._apply_tab_icons()
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
@@ -704,6 +714,8 @@ class MainWindow(QMainWindow):
     def _save_panel_visibility(self, settings: Optional[QSettings] = None) -> None:
         """Persist open/closed dock state independently of Qt's full layout blob."""
         settings = settings or QSettings("ProjectCeres", "GMAssistant")
+        if settings.value("panelVisibility", "", type=str) and not self._panel_visibility_restored:
+            return
         visibility = {
             key: dock.toggleViewAction().isChecked()
             for key, dock in self._dock_visibility_panels().items()
@@ -711,6 +723,9 @@ class MainWindow(QMainWindow):
         if not any(visibility.values()):
             return
         settings.setValue("panelVisibility", json.dumps(visibility, sort_keys=True))
+        active_tab = self._active_dock_tab_key()
+        if active_tab:
+            settings.setValue("activeDockTab", active_tab)
 
     def _restore_panel_visibility(self) -> None:
         """Restore dock visibility even when saved windowState is skipped."""
@@ -733,6 +748,54 @@ class MainWindow(QMainWindow):
                 dock.setVisible(bool(visibility[key]))
             elif title in visibility:
                 dock.setVisible(bool(visibility[title]))
+        self._panel_visibility_restored = True
+
+    def _active_dock_tab_key(self) -> Optional[str]:
+        """Return the persisted key for the currently selected dock tab."""
+        docks = self._dock_visibility_panels()
+        if (
+            self._last_active_dock_tab_key in docks
+            and docks[self._last_active_dock_tab_key].toggleViewAction().isChecked()
+        ):
+            return self._last_active_dock_tab_key
+        for tab_bar in self._dock_tab_bars():
+            title = tab_bar.tabText(tab_bar.currentIndex()).strip()
+            key = self._dock_key_for_title(title)
+            if key and docks[key].toggleViewAction().isChecked():
+                return key
+        return None
+
+    def _dock_tab_bars(self) -> list[QTabBar]:
+        """Return only QMainWindow dock tab bars, not nested panel tab bars."""
+        dock_titles = {dock.windowTitle() for dock in self._dock_visibility_panels().values()}
+        bars = []
+        for tab_bar in self.findChildren(QTabBar):
+            titles = {tab_bar.tabText(index).strip() for index in range(tab_bar.count())}
+            if len(titles & dock_titles) >= 2:
+                bars.append(tab_bar)
+        return bars
+
+    def _clear_saved_active_dock_tab(self, settings: QSettings) -> None:
+        settings.remove("activeDockTab")
+        self._last_active_dock_tab_key = None
+
+    def _restore_active_dock_tab(self, settings: Optional[QSettings] = None) -> None:
+        """Raise the last selected visible dock tab after visibility has been restored."""
+        settings = settings or QSettings("ProjectCeres", "GMAssistant")
+        active_key = settings.value("activeDockTab", "", type=str)
+        if not active_key:
+            return
+        dock = self._dock_visibility_panels().get(active_key)
+        if dock is None or not dock.toggleViewAction().isChecked():
+            self._clear_saved_active_dock_tab(settings)
+            return
+        dock.raise_()
+        self._last_active_dock_tab_key = active_key
+        for tab_bar in self._dock_tab_bars():
+            for index in range(tab_bar.count()):
+                if self._dock_key_for_title(tab_bar.tabText(index).strip()) == active_key:
+                    tab_bar.setCurrentIndex(index)
+                    return
 
     def _restored_geometry_is_visible(self) -> bool:
         """Check whether restored geometry leaves the window on a real screen."""

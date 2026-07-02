@@ -9,7 +9,7 @@ os.environ.setdefault("QT_OPENGL", "software")
 os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu --disable-software-rasterizer")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 
-from PyQt5.QtWidgets import QApplication, QDockWidget, QLabel, QMainWindow
+from PyQt5.QtWidgets import QApplication, QDockWidget, QLabel, QMainWindow, QTabBar
 from PyQt5.QtCore import Qt, QSettings
 
 from core.config import Config
@@ -288,6 +288,167 @@ class MainWindowDockingTests(unittest.TestCase):
             settings.remove("panelVisibility")
             if old_value is not None:
                 settings.setValue("panelVisibility", old_value)
+            settings.sync()
+
+    def test_active_right_tab_is_saved_and_restored_independently(self) -> None:
+        settings = QSettings("ProjectCeres", "GMAssistant")
+        keys = ["activeDockTab", "panelVisibility"]
+        old_values = {key: settings.value(key) for key in keys}
+        try:
+            for key in keys:
+                settings.remove(key)
+
+            window = self._build_window()
+            try:
+                window.show()
+                self.app.processEvents()
+
+                spotify_tab = next(
+                    bar
+                    for bar in window.findChildren(QTabBar)
+                    if any(bar.tabText(i) == "Spotify" for i in range(bar.count()))
+                )
+                spotify_tab.setCurrentIndex(
+                    next(i for i in range(spotify_tab.count()) if spotify_tab.tabText(i) == "Spotify")
+                )
+                self.app.processEvents()
+                window._save_panel_visibility(settings)
+
+                self.assertEqual(settings.value("activeDockTab", "", type=str), "Spotify")
+            finally:
+                window.close()
+                self.app.processEvents()
+
+            restored = self._build_window(restore_panel_visibility=True)
+            try:
+                settings.setValue("activeDockTab", "Spotify")
+                restored.show()
+                self.app.processEvents()
+                restored._restore_panel_visibility()
+                self.app.processEvents()
+
+                tab_bars = restored.findChildren(QTabBar)
+                current_tabs = {bar.tabText(bar.currentIndex()) for bar in tab_bars if bar.count()}
+                self.assertIn("Spotify", current_tabs)
+            finally:
+                restored.close()
+                self.app.processEvents()
+        finally:
+            for key in keys:
+                settings.remove(key)
+            for key, value in old_values.items():
+                if value is not None:
+                    settings.setValue(key, value)
+            settings.sync()
+
+    def test_active_dock_tab_prefers_last_user_selected_tab(self) -> None:
+        window = self._build_window()
+        try:
+            window.show()
+            self.app.processEvents()
+            window._last_active_dock_tab_key = "Spotify"
+
+            self.assertEqual(window._active_dock_tab_key(), "Spotify")
+        finally:
+            window.close()
+            self.app.processEvents()
+
+    def test_close_without_visibility_restore_preserves_saved_panel_visibility(self) -> None:
+        settings = QSettings("ProjectCeres", "GMAssistant")
+        keys = ["geometry", "windowState", "layoutStateVersion", "panelVisibility"]
+        old_values = {key: settings.value(key) for key in keys}
+        saved_visibility = json.dumps({"Spotify": True, "Visualiser": False, "PlexJellyfin": False})
+        try:
+            for key in keys:
+                settings.remove(key)
+            settings.setValue("panelVisibility", saved_visibility)
+            settings.sync()
+
+            window = self._build_window(restore_panel_visibility=False)
+            try:
+                window._save_panel_visibility(settings)
+            finally:
+                window.close()
+                self.app.processEvents()
+
+            self.assertEqual(settings.value("panelVisibility", "", type=str), saved_visibility)
+        finally:
+            for key in keys:
+                settings.remove(key)
+            for key, value in old_values.items():
+                if value is not None:
+                    settings.setValue(key, value)
+            settings.sync()
+
+    def test_active_tab_restores_when_panel_visibility_is_missing(self) -> None:
+        settings = QSettings("ProjectCeres", "GMAssistant")
+        keys = ["activeDockTab", "panelVisibility"]
+        old_values = {key: settings.value(key) for key in keys}
+        try:
+            for key in keys:
+                settings.remove(key)
+            settings.setValue("activeDockTab", "Spotify")
+            settings.sync()
+
+            window = self._build_window(restore_panel_visibility=True)
+            try:
+                window.show()
+                self.app.processEvents()
+
+                current_tabs = {bar.tabText(bar.currentIndex()) for bar in window._dock_tab_bars()}
+                self.assertIn("Spotify", current_tabs)
+            finally:
+                window.close()
+                self.app.processEvents()
+        finally:
+            for key in keys:
+                settings.remove(key)
+            for key, value in old_values.items():
+                if value is not None:
+                    settings.setValue(key, value)
+            settings.sync()
+
+    def test_hidden_saved_active_tab_is_removed_without_forcing_media_tab(self) -> None:
+        settings = QSettings("ProjectCeres", "GMAssistant")
+        keys = ["activeDockTab", "panelVisibility"]
+        old_values = {key: settings.value(key) for key in keys}
+        try:
+            for key in keys:
+                settings.remove(key)
+            settings.setValue("activeDockTab", "PlexJellyfin")
+            settings.setValue(
+                "panelVisibility",
+                json.dumps(
+                    {
+                        "Discord": True,
+                        "Spotify": True,
+                        "NowPlaying": False,
+                        "Visualiser": False,
+                        "PlexJellyfin": False,
+                    }
+                ),
+            )
+            settings.sync()
+
+            window = self._build_window(restore_panel_visibility=True)
+            try:
+                window.show()
+                self.app.processEvents()
+
+                current_tabs = {bar.tabText(bar.currentIndex()) for bar in window._dock_tab_bars()}
+                self.assertNotIn("Plex / Jellyfin", current_tabs)
+                self.assertNotIn("Visualiser", current_tabs)
+                self.assertNotIn("Now Playing", current_tabs)
+                self.assertEqual(settings.value("activeDockTab", "", type=str), "")
+            finally:
+                window.close()
+                self.app.processEvents()
+        finally:
+            for key in keys:
+                settings.remove(key)
+            for key, value in old_values.items():
+                if value is not None:
+                    settings.setValue(key, value)
             settings.sync()
 
     def test_left_tools_are_real_movable_docks(self) -> None:

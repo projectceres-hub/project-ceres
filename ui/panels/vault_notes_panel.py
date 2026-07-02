@@ -105,7 +105,6 @@ class VaultNotesPanel(QDockWidget):
         self._build_ui()
         self._populate_vault_selector()
         self._refresh_tree()
-        self._restore_workspace_object()
 
     # ── UI construction ────────────────────────────────────────────────────────
 
@@ -285,7 +284,11 @@ class VaultNotesPanel(QDockWidget):
         vault_path = self._vault_combo.currentData()
         if vault_name and vault_name != self._config.current_vault:
             self._run_command("switch", vault_name, self._config)
+            self._config.current_vault = vault_name
+            if hasattr(self._config, "save_settings"):
+                self._config.save_settings()
             self.status_message.emit(f"Vault: {vault_name}")
+            self._clear_note_viewer_state()
         if vault_path:
             self._current_vault_path = Path(vault_path)
         self._refresh_tree()
@@ -460,6 +463,16 @@ class VaultNotesPanel(QDockWidget):
     def _show_browser(self) -> None:
         """Return to the vault browser page."""
         self._stack.setCurrentIndex(0)
+
+    def _clear_note_viewer_state(self) -> None:
+        """Forget the embedded note preview when the active vault changes."""
+        self._current_note_path = None
+        self._back_stack.clear()
+        self._forward_stack.clear()
+        self._viewer_title.setText("")
+        self._note_browser.clear()
+        self._show_browser()
+        self._update_nav_buttons()
 
     def _navigate_back(self) -> None:
         if not self._back_stack or self._current_note_path is None:
