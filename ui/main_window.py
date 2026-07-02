@@ -131,6 +131,7 @@ class MainWindow(QMainWindow):
         self._build_status_bar()
         self._restore_geometry()
         self._restore_panel_visibility()
+        self._panel_visibility_restored_after_show = False
         self._apply_tab_icons()   # must run AFTER restoreState() rebuilds tab bars
 
     # ── Central widget — placeholder (Ceres Chat is dockable) ─────────────────
@@ -636,6 +637,9 @@ class MainWindow(QMainWindow):
     def showEvent(self, event) -> None:  # type: ignore[override]
         """Re-apply tab icons after Qt rebuilds tab bars on first show."""
         super().showEvent(event)
+        if not self._panel_visibility_restored_after_show:
+            self._panel_visibility_restored_after_show = True
+            self._restore_panel_visibility()
         self._apply_tab_icons()
 
     def closeEvent(self, event) -> None:  # type: ignore[override]

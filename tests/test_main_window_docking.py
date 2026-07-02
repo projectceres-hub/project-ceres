@@ -1,4 +1,5 @@
 import os
+import json
 import sys
 import unittest
 from unittest.mock import patch
@@ -167,6 +168,55 @@ class MainWindowDockingTests(unittest.TestCase):
             finally:
                 window.close()
                 self.app.processEvents()
+        finally:
+            for key in keys:
+                settings.remove(key)
+            for key, value in old_values.items():
+                if value is not None:
+                    settings.setValue(key, value)
+            settings.sync()
+
+    def test_tabified_panel_visibility_stays_restored_after_first_show(self) -> None:
+        settings = QSettings("ProjectCeres", "GMAssistant")
+        keys = ["geometry", "windowState", "layoutStateVersion", "panelVisibility"]
+        old_values = {key: settings.value(key) for key in keys}
+        restore_calls = []
+        original_restore = MainWindow._restore_panel_visibility
+
+        def tracked_restore(window: MainWindow) -> None:
+            restore_calls.append("restore")
+            original_restore(window)
+
+        try:
+            for key in keys:
+                settings.remove(key)
+            settings.setValue(
+                "panelVisibility",
+                json.dumps({"Tidal": False, "Discord": True}),
+            )
+            settings.sync()
+
+            with patch.object(MainWindow, "_restore_geometry", lambda self: None), patch.object(
+                MainWindow, "_restore_panel_visibility", tracked_restore
+            ):
+                window = MainWindow(
+                    Config(vaults={"TestVault": "GMAssistantVault"}, current_vault="TestVault"),
+                    lambda _command: "",
+                )
+                self._windows.append(window)
+                try:
+                    self.assertEqual(len(restore_calls), 1)
+
+                    window.show()
+                    self.app.processEvents()
+
+                    self.assertGreaterEqual(len(restore_calls), 2)
+                    self.assertFalse(window._tidal_panel.toggleViewAction().isChecked())
+                    self.assertFalse(window._tidal_panel.isVisible())
+                    self.assertTrue(window._discord_panel.toggleViewAction().isChecked())
+                finally:
+                    window.close()
+                    self.app.processEvents()
         finally:
             for key in keys:
                 settings.remove(key)

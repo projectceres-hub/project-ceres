@@ -2965,11 +2965,14 @@ def _wrap_addvault(args: str, config: Config, save_vaults_wrapper: Any) -> None:
         completer.invalidate_cache()
 
 def _wrap_switch(args: str, config: Config) -> None:
+    previous_vault = config.current_vault
     config.current_vault = cmd_switch(
         args, config.vaults, config.current_vault, config.vault_number_map,
-        config.save_settings, config.input_provider, list_vaults,
+        lambda: None, config.input_provider, list_vaults,
         config.ignored_vaults, display_numbered_vaults,
     )
+    if config.current_vault != previous_vault:
+        config.save_settings()
     completer = getattr(config, "_command_completer", None)
     if completer is not None:
         completer.invalidate_cache()
