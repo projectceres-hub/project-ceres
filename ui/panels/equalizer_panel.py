@@ -152,11 +152,12 @@ class EqualizerPanel(QDockWidget):
         self._sliders: List[QSlider] = []
         self._db_labels: List[QLabel] = []
         self._build_ui()
-        self.setMinimumSize(360, 220)
+        self.setMinimumSize(240, 220)
         self.setMaximumHeight(260)
         self._load_from_config()
-        # After MainWindow wires eq_changed, push persisted state to panels
-        QTimer.singleShot(0, self._emit)
+        # After MainWindow wires eq_changed, push persisted state to panels.
+        # Broadcast only — startup must never rewrite settings.json.
+        QTimer.singleShot(0, self._broadcast)
 
     # ── UI ────────────────────────────────────────────────────────────────────
 
@@ -321,15 +322,27 @@ class EqualizerPanel(QDockWidget):
     def _on_reset(self) -> None:
         self._preset_combo.setCurrentText("Flat")
 
-    def _emit(self) -> None:
-        """Persist to config and broadcast eq_changed."""
+    def _broadcast(self) -> None:
+        """Sync in-memory config and broadcast eq_changed WITHOUT persisting.
+
+        Used on startup to push restored state to source panels — writing
+        settings.json here would clobber the file on every GUI start (and in
+        any test that builds a MainWindow).
+        """
         enabled = self.is_enabled()
         bands = self.get_bands()
         self._config.eq_enabled = enabled
         self._config.eq_bands = bands
         self._config.eq_preset = self._preset_combo.currentText()
-        self._config.save_settings()
         self.eq_changed.emit(enabled, bands)
+
+    def _emit(self) -> None:
+        """Persist to config and broadcast eq_changed.
+
+        Only called from real user interaction (slider / preset / toggle).
+        """
+        self._broadcast()
+        self._config.save_settings()
 
     def _load_from_config(self) -> None:
         """Restore from persisted config on startup."""

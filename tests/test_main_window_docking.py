@@ -1,6 +1,7 @@
 import os
 import json
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -30,13 +31,31 @@ from ui.main_window import MainWindow, _should_restore_dock_state
 class MainWindowDockingTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.app = QApplication.instance() or QApplication([sys.argv[0]])
-        # Keep PyQt wrappers alive; rapid MainWindow GC can abort during dock teardown.
-        cls._windows = []
+        # Run from a temp directory so any incidental Config.save_settings()
+        # (panel construction, vault fallback, etc.) can never overwrite the
+        # real repo-root settings.json.
+        cls._original_cwd = os.getcwd()
+        cls._tmpdir = tempfile.TemporaryDirectory()
+        os.chdir(cls._tmpdir.name)
+        try:
+            cls.app = QApplication.instance() or QApplication([sys.argv[0]])
+            # Keep PyQt wrappers alive; rapid MainWindow GC can abort during dock teardown.
+            cls._windows = []
+        except BaseException:
+            os.chdir(cls._original_cwd)
+            cls._tmpdir.cleanup()
+            raise
 
     @classmethod
     def tearDownClass(cls) -> None:
-        cls.app.quit()
+        try:
+            cls.app.quit()
+        finally:
+            os.chdir(cls._original_cwd)
+            try:
+                cls._tmpdir.cleanup()
+            except OSError:
+                pass
 
     def _build_window(self, restore_panel_visibility: bool = False) -> MainWindow:
         config = Config(vaults={"TestVault": "GMAssistantVault"}, current_vault="TestVault")
@@ -341,17 +360,98 @@ class MainWindowDockingTests(unittest.TestCase):
                     settings.setValue(key, value)
             settings.sync()
 
-    def test_active_dock_tab_prefers_last_user_selected_tab(self) -> None:
+    def test_active_dock_tab_reflects_live_tab_selection_over_stale_key(self) -> None:
         window = self._build_window()
         try:
             window.show()
             self.app.processEvents()
-            window._last_active_dock_tab_key = "Spotify"
+            # Simulate a stale key left over from startup restore, then a
+            # real user click on the Spotify tab — the live tab bar must win.
+            window._last_active_dock_tab_key = "FantasyGrounds"
+            spotify_tab = next(
+                bar
+                for bar in window._dock_tab_bars()
+                if any(bar.tabText(i).strip() == "Spotify" for i in range(bar.count()))
+            )
+            spotify_tab.setCurrentIndex(
+                next(
+                    i
+                    for i in range(spotify_tab.count())
+                    if spotify_tab.tabText(i).strip() == "Spotify"
+                )
+            )
+            self.app.processEvents()
 
             self.assertEqual(window._active_dock_tab_key(), "Spotify")
         finally:
             window.close()
             self.app.processEvents()
+
+    def test_active_tab_selected_after_restore_persists_across_sessions(self) -> None:
+        """Restore a saved tab → user clicks a different tab → save → new
+        session raises the tab the user actually clicked, not the stale one."""
+        settings = QSettings("ProjectCeres", "GMAssistant")
+        keys = ["activeDockTab", "panelVisibility"]
+        old_values = {key: settings.value(key) for key in keys}
+        try:
+            for key in keys:
+                settings.remove(key)
+            settings.setValue("activeDockTab", "Spotify")
+            settings.sync()
+
+            window = self._build_window(restore_panel_visibility=True)
+            try:
+                window.show()
+                self.app.processEvents()
+                # Startup restore raised Spotify and set the stored key.
+                self.assertEqual(window._last_active_dock_tab_key, "Spotify")
+
+                # User clicks the Fantasy Grounds tab.
+                fgu_tab = next(
+                    bar
+                    for bar in window._dock_tab_bars()
+                    if any(
+                        bar.tabText(i).strip() == "Fantasy Grounds"
+                        for i in range(bar.count())
+                    )
+                )
+                fgu_tab.setCurrentIndex(
+                    next(
+                        i
+                        for i in range(fgu_tab.count())
+                        if fgu_tab.tabText(i).strip() == "Fantasy Grounds"
+                    )
+                )
+                self.app.processEvents()
+
+                window._save_panel_visibility(settings)
+                self.assertEqual(
+                    settings.value("activeDockTab", "", type=str), "FantasyGrounds"
+                )
+            finally:
+                window.close()
+                self.app.processEvents()
+
+            restored = self._build_window(restore_panel_visibility=True)
+            try:
+                restored.show()
+                self.app.processEvents()
+
+                current_tabs = {
+                    bar.tabText(bar.currentIndex()).strip()
+                    for bar in restored._dock_tab_bars()
+                }
+                self.assertIn("Fantasy Grounds", current_tabs)
+            finally:
+                restored.close()
+                self.app.processEvents()
+        finally:
+            for key in keys:
+                settings.remove(key)
+            for key, value in old_values.items():
+                if value is not None:
+                    settings.setValue(key, value)
+            settings.sync()
 
     def test_close_without_visibility_restore_preserves_saved_panel_visibility(self) -> None:
         settings = QSettings("ProjectCeres", "GMAssistant")

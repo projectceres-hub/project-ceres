@@ -1,5 +1,7 @@
 # PROJECT_MAP.md — Project Ceres (AI reference)
 
+*Last verified against the codebase: 2026-07-02.*
+
 This document is for **coding agents**: it describes the **current** repository layout, naming patterns, and how components connect. It does **not** track roadmap or planned work (see `ROADMAP.md` at repo root for human planning only). End-user setup and feature marketing copy live in `README.md`.
 
 **Scope:** onboarding map — not a command manual, not a schema dump. **Known:** registry of command names = `register_all_commands` in [`assistant.py`](assistant.py); **`Config` fields** = [`core/config.py`](core/config.py). Deeper reading: `pantheon/*/README.md`, [`README.md`](README.md), cited modules.
@@ -48,11 +50,11 @@ flowchart LR
 | `variables.env` | Secrets (`OPENAI_API_KEY`, Discord, Spotify, etc.). **Never commit.** Loaded via `python-dotenv` (and GUI Preferences can push into `os.environ`). |
 | `settings.json` | Persisted GUI/CLI settings (gitignored). `Config.load_settings()` / `save_settings()` — e.g. current vault, FGU roots, model name, `openai_key` handling (key often from env only). |
 | `vaults.json` | Vault name → path map (gitignored). |
-| `.tidal_token.json`, `.youtube_token.json` | OAuth tokens created by panels after sign-in (typically gitignored). |
+| `.tidal_token.json`, `.youtube_token.json`, `.spotipyoauthcache` | OAuth tokens/caches created by panels after sign-in (gitignored). |
 | `logs/ui.log` | GUI run log (`ui_main.py` redirects stdio here each launch). |
 | `logs/errors.log` | Rotating error log from `core/errors.py` (`install_error_handler`, `guarded_main`). |
 | `exports/` | Runtime outputs (gitignored per project conventions). |
-| `QSettings` org `ProjectCeres` / app `GMAssistant` | Window geometry and dock state (`ui/main_window.py`). |
+| `QSettings` org `ProjectCeres` / app `GMAssistant` | Window geometry, dock state, and per-panel open/closed state (`panelVisibility` key) — see `_save_panel_visibility` / `_dock_visibility_panels` in `ui/main_window.py`. |
 
 ---
 
@@ -68,6 +70,8 @@ flowchart LR
 | `helpers/discord_bot/` | JSON schemas, preview scripts — not the in-app Discord panel. |
 | `tools/scripts/` | Offline maintenance (e.g. SRD chunk/convert scripts, YAML rules). |
 | `GMAssistantVault/` | Default/sample Obsidian vault tree bundled in the repo. |
+| `tests/` | **Automated unittest suite** (see §16) — GUI docking/theme/geometry, FGU import, PDF importer dialog, error logging, vault persistence. |
+| `docs/` | Agent/dev docs: `gui_launch.md`, `fgu_schemas.md` (FGU import/export field map), `infinite_table_mode.md` (future workspace/canvas architecture), `superpowers/` (plans/specs). |
 | `.cursor/rules/` | Cursor agent rules (normative coding workflow — cite these, do not duplicate wholesale here). |
 
 ---
@@ -78,7 +82,7 @@ Implementations belong under `pantheon/<domain>/`. The conceptual names map to R
 
 | Domain | Path | Owns |
 |--------|------|------|
-| Vervactor | `pantheon/vervactor/` | Campaign creation, vault folder setup |
+| Vervactor | `pantheon/vervactor/` | Campaign creation, vault folder setup, workspace state (`workspace.py`: `WorkspaceState`, `WorkspaceObjectRef`, `load_scene_data` / `save_scene_data` — vault-scoped panel scene storage; foundation for Infinite Table Mode, see `docs/infinite_table_mode.md`) |
 | Reparator | `pantheon/reparator/` | Template system |
 | Imporcitor | `pantheon/imporcitor/` | PDF→markdown, bulk import (`pdf_core.py`, `pdf_tools/`) |
 | Insitor | `pantheon/insitor/` | Note creation (`NoteSpec`, `create_note()`, …) |
@@ -97,6 +101,7 @@ Implementations belong under `pantheon/<domain>/`. The conceptual names map to R
 |------|--------|
 | Convector | `wake_words.py`, `voice_commands.py`, `voice_pipeline.py`, `text_command_parser.py`, `transcript_parser.py`, `session_package.py`, `chat_agent.py` |
 | Messor | `fgu_character.py`, `fgu.py`, `fgu_import.py`, `fgu_export.py`, `audio_session.py` |
+| Vervactor | `campaigns.py`, `workspace.py` |
 | Insitor | `note_creator.py` |
 | Occator | `search_index.py`, `srd_index.py` |
 | Promitor | `session_scheduler.py`, exports used by `assistant.py` for session packages |
@@ -156,6 +161,13 @@ Implementations belong under `pantheon/<domain>/`. The conceptual names map to R
 
 `core/__init__.py` may be empty; do not assume package-level exports from `core`.
 
+### 5.6 Empty placeholders and data files
+
+| Path | Notes |
+|------|-------|
+| `core/commands.py`, `core/settings.py` | **0-byte placeholder files** — no content; do not import from them. |
+| `core/maps/*.yaml` | Game-system mapping profiles (`dnd5e`, `pf2e`, `wwn`, `generic`) listed by the PDF Importer dialog (`ui/dialogs/pdf_importer_dialog.py`). |
+
 ---
 
 ## 6. UI organization
@@ -164,17 +176,19 @@ Implementations belong under `pantheon/<domain>/`. The conceptual names map to R
 
 - **Dock widgets:** Most features are `QDockWidget` subclasses in `ui/panels/`.
 - **Imports:** Every UI file uses the **PyQt5 first, PySide6 fallback** try/except pattern (see `.cursor/rules/001-code-standards.mdc`).
-- **Theme:** `ui/theme.py` exposes colors and `STYLESHEET` used by `MainWindow` and panels.
-- **Dependency injection:** Most panels take `(config, run_command, parent)`. Exceptions in `MainWindow`: `SoundboardPanel(parent)` and `MixerPanel(parent)` only; `BrowserPanel(config, parent)` has no `run_command`.
+- **Theme:** `ui/theme.py` is a **Winamp-classic theme** (black LCD wells, green text, gold meters) exposing colors and `STYLESHEET`; reusable panel body frame via `QFrame[class="winamp-panel-frame"]`.
+- **Dependency injection:** Most panels take `(config, run_command, parent)`. Exceptions in `MainWindow`: `SoundboardPanel(parent, config=config)`, `MixerPanel(parent)`; `BrowserPanel(config, parent)` has no `run_command`.
 - **Threading:** Long work in `QThread`/`QObject` workers; results return via **signals** only; never touch Qt widgets from background threads.
 - **Cross-panel behavior:** Prefer connections via **`MainWindow`** (signals/slots, shared `run_command`) over importing one panel module from another.
 
 ### 6.2 Central vs docked layout
 
 - **Central widget:** minimal dark placeholder. Ceres Chat is dockable, not central.
-- **Left dock:** `Ceres Chat`, `VaultNotesPanel`, `MixerPanel`, `EqualizerPanel` (default order established in `MainWindow._build_panels`).
+- **Left dock:** two independently resizable tool columns (`MainWindow._dock_left_tool_columns`): Ceres Chat dock + `MixerPanel` split horizontally, plus `VaultNotesPanel` and `EqualizerPanel`.
 - **Bottom dock:** `ConsolePanel` (hidden by default if `config.console_hidden_default`).
-- **Right dock (tabbed stack):** Discord, Spotify, Soundboard, Fantasy Grounds, Scheduler, Browser, Syrinscape, YouTube, Tidal, Local Music, Now Playing, Visualiser, Plex / Jellyfin, Master Scenes.
+- **Right dock (tabbed stack):** Discord, Spotify, **Audio Console** (the soundboard panel, retitled), Fantasy Grounds, Scheduler, Browser, Syrinscape, YouTube, Tidal, Local Music, Now Playing, Visualiser, Plex / Jellyfin.
+- **Campaign Scenes (ex "Master Scenes"):** `MasterScenePanel` is **not a right-dock tab anymore** — it is created and embedded inside the Audio Console scene pane via `SoundboardPanel.configure_campaign_scenes(panel_refs, config)` (window title "Campaign Scenes").
+- **Persistence:** dock geometry/layout plus per-panel visibility saved to `QSettings` (`panelVisibility`); vault selection persisted in `settings.json`.
 
 ### 6.3 Panel inventory (`ui/panels/`)
 
@@ -185,7 +199,7 @@ Implementations belong under `pantheon/<domain>/`. The conceptual names map to R
 | `console_panel.py` | Scrollable log of raw command output (power users). |
 | `discord_panel.py` | Discord bot, voice, transcription, wake-word personas; emits music/service commands. |
 | `spotify_panel.py` | Spotify OAuth, playback, search, scenes. |
-| `soundboard_panel.py` | Multi-channel pygame soundboard + scenes. |
+| `soundboard_panel.py` | **"Audio Console"** — multi-channel pygame soundboard + scenes; hosts the embedded Campaign Scenes pane (`configure_campaign_scenes`). |
 | `fgu_panel.py` | FGU XML/campaign browsing. |
 | `scheduler_panel.py` | Session scheduling, `.ics`, Discord poll integration. |
 | `browser_panel.py` | Embedded web view, bookmarks, Obsidian clip. |
@@ -197,22 +211,23 @@ Implementations belong under `pantheon/<domain>/`. The conceptual names map to R
 | `equalizer_panel.py` | 10-band EQ controls and presets for supported local audio panels. |
 | `visualiser_panel.py` | Audio visualiser dock; NumPy is optional. |
 | `plex_jellyfin_panel.py` | Plex / Jellyfin playback, search, scenes, and Now Playing integration. |
-| `master_scene_panel.py` | Cross-service scene launcher that can fan out commands to media panels. |
+| `master_scene_panel.py` | **"Campaign Scenes"** — cross-service scene launcher fanning out commands to media panels; embedded in the Audio Console, not docked standalone. |
 | `mixer_panel.py` | Per-source volume/mute for registered audio panels. |
 
 ### 6.4 Dialogs and assets
 
 - `ui/dialogs/preferences_dialog.py` — Settings UI; saving may update `config` and emit signals (e.g. main window refreshes chat client on API key change).
+- `ui/dialogs/pdf_importer_dialog.py` — modal launcher for the PDF pipeline (`pdf2md` / `pdfbatch` via `run_command`); lists mapping profiles from `core/maps/*.yaml`. Opened from Tools menu → "PDF Importer..." (`MainWindow._open_pdf_importer`).
 - `ui/assets/*.png` — Tab icons (`MainWindow._TAB_ICONS`) and mixer source icons (filenames passed to `MixerPanel.register_source`).
 
 ### 6.5 Signal wiring (main window)
 
 Wiring is **declared in** [`ui/main_window.py`](ui/main_window.py) (`_build_panels` and nearby). In short:
 
-- **Discord → music/apps:** `*_command` signals on `DiscordPanel` connect to `handle_command` on Spotify, Syrinscape, YouTube, Tidal, Local Music, Plex / Jellyfin, and Master Scenes.
+- **Discord → music/apps:** `*_command` signals on `DiscordPanel` connect to `handle_command` on Spotify, Syrinscape, YouTube, Tidal, Local Music, Plex / Jellyfin, and Campaign Scenes (`scene_command`).
 - **Scheduler ↔ Discord:** `SchedulerPanel` requests channels, sends/closes polls, posts messages; `DiscordPanel` signals poll results and errors back (see panel files for exact signal names).
-- **Mixer:** `MixerPanel.register_source(...)` after audio panels exist; currently includes Soundboard, Syrinscape, Spotify, YouTube, Tidal, Local Music, and Plex / Jellyfin.
-- **Now Playing:** `NowPlayingPanel.register_source(...)` polls registered media panels for track/status metadata.
+- **Mixer:** `MixerPanel.register_source(...)` after audio panels exist; currently includes Soundboard (Audio Console), Syrinscape, Spotify, YouTube, Tidal, Local Music, and Plex/Jellyfin.
+- **Now Playing:** `NowPlayingPanel.register_source(...)` polls registered media panels (Spotify, YouTube, Tidal, Local Music, Syrinscape, Plex/Jellyfin) for track/status metadata.
 - **Equalizer:** `EqualizerPanel.eq_changed` connects to supported local audio panels (`SoundboardPanel`, `LocalMusicPanel`).
 - **Status:** many panels emit `status_message` → main window status bar; `ChatPanel` can request the console for full command output.
 
@@ -268,7 +283,7 @@ These summarize enforced project rules; full detail is in `.cursor/rules/*.mdc`.
 | PDF | `pdf2md`, `pdfbatch`, `pdf-send-to-vault` | `assistant.py`, `pantheon.imporcitor` |
 | Sessions & exports | `session-schedule`, `session-discord-export` | `pantheon.promitor`, `pantheon.convector` |
 | Scheduler | `schedule-start`, `schedule-stop`, `schedule-status`, `schedule-run-once`, `*-run-now` variants | `pantheon.serritor`, `assistant.py` |
-| Campaigns & FGU | `campaign-create`, `session-create`, `fgu-import-log`, … | `pantheon.vervactor`, `pantheon.messor`, `assistant.py` |
+| Campaigns & FGU | `campaign-create`, `session-create`, `fgu-import-log`, `fgu-import`, `fgu-export`, … | `pantheon.vervactor`, `pantheon.messor`, `assistant.py` |
 | Voice / inbox | `voice-command`, `voice-commands-from-*`, `voice-commands-process`, `voice-enable`, … | `pantheon.convector`, `assistant.py` |
 | Tags & history | `tag-*`, `undo`, `history-list`, `history-restore` | `pantheon.obarator`, `pantheon.conditor` |
 
@@ -379,15 +394,18 @@ Summary only. **Known:** full structures and validation live in the **producer/c
 
 ## 16. Verification and smoke-test checklist
 
-**No automated test suite** in-repo (no `tests/`, no `pytest` layout) — rely on manual smoke + the checks in [`.cursor/rules/04-verification.mdc`](.cursor/rules/04-verification.mdc): `python -m py_compile <file.py>`, grep for dropped `def` on large files, read last 20 lines for truncation.
+**Automated tests exist:** `tests/` holds a **`unittest`-style suite** (run `python -m unittest discover tests -v` or per-module `python -m unittest tests.test_fgu_import -v`; no pytest config). Current coverage: `test_error_logging`, `test_fgu_import`, `test_main_window_docking`, `test_pdf_importer_dialog`, `test_soundboard_audio_console`, `test_vault_selection_persistence`, `test_winamp_theme`, `test_window_geometry`. GUI tests instantiate Qt — run them in an environment with a working Qt platform (use `QT_QPA_PLATFORM=offscreen` headless).
+
+Also keep the manual checks from [`.cursor/rules/04-verification.mdc`](.cursor/rules/04-verification.mdc): `python -m py_compile <file.py>`, grep for dropped `def` on large files, read last 20 lines for truncation.
 
 | Change type | Minimal extra check |
 |-------------|---------------------|
-| Any Python module | `py_compile` changed files |
+| Any Python module | `py_compile` changed files; run related `tests/test_*.py` if one covers the area |
 | Pantheon / backend | `python -c "from pantheon.<domain> import …"` from project root |
 | `assistant.py` / registry | Run CLI `help` or inspect `config.commands` after init |
 | `Config` persistence | Confirm new field in `load_settings`/`save_settings` and **no secrets** written |
-| GUI / panel | `python ui_main.py`; tail `logs/ui.log` for startup checkpoints, geometry state, and tracebacks |
+| GUI / panel | `python ui_main.py`; tail `logs/ui.log`; run `tests/test_main_window_docking.py`, `test_window_geometry.py`, `test_winamp_theme.py` as applicable |
+| FGU import/export | `python -m unittest tests.test_fgu_import -v`; see `docs/fgu_schemas.md` for field contracts |
 | Scheduler | `schedule-status` or `schedule-run-once` / relevant `*-run-now` |
 | Voice inbox | Drop a tiny valid JSON in `inbox/voice_commands/`, run `voice-commands-process` (use `--dry-run` if supported) |
 
@@ -435,6 +453,9 @@ Rough **risk / churn** guidance (not a quality judgment):
 | **Command registry (full list)** | `assistant.py` → `register_all_commands` |
 | **`Config` fields (authoritative)** | `core/config.py` |
 | Human README, install, commands | `README.md` |
+| FGU import/export field map | `docs/fgu_schemas.md` |
+| Infinite Table Mode (future workspace architecture) | `docs/infinite_table_mode.md`; seed code in `pantheon/vervactor/workspace.py` |
+| Latest session handoff (gitignored, may be stale) | `HANDOFF.md` at repo root |
 | Domain-specific notes | `pantheon/*/README.md` |
 | Pantheon metaphor (lore) | `pantheon/PANTHEON.md` |
 | Human roadmap (not summarized here) | `ROADMAP.md` |

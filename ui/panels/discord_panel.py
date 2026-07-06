@@ -18,12 +18,15 @@ Layout
   ┌─ 🎙 DISCORD ──────────────────────────────────────────┐
   │ Token: [●●●●●●●●●●●●●●●●] [🔌 Connect] [✕]           │
   │ ● Connected  ·  My Server  ·  Ceres#1234              │
+  │ Server: [▾ My Server            ] [🔄] [➕ Invite]    │
   ├───────────────────────────────────────────────────────│
-  │ Voice Channel: [▾ Session VC          ] [Join]        │
+  │ Voice Channel: [▾ Session VC ] [Join][Leave][🎙][🎧] │
   │ 👥  Aragorn  ·  Gimli  ·  Legolas                    │
   ├───────────────────────────────────────────────────────│
   │ [🔴 Record Session] [⏹ Stop] [💾 Save Transcript]    │
   │ 🔴 Recording  00:04:32  ·  ~1,200 words               │
+  │ 🤖 Reply ch: [▾ #general ]                            │
+  │ 💬 [  send a message as the bot …          ] [Send]  │
   ├───────────────────────────────────────────────────────│
   │ 📜 Live Transcript                       [🗑 Clear]   │
   │ ┌─────────────────────────────────────────────────┐  │
@@ -52,16 +55,18 @@ try:
     from PyQt5.QtWidgets import (
         QDockWidget, QWidget, QVBoxLayout, QHBoxLayout,
         QPushButton, QLabel, QComboBox, QLineEdit,
-        QTextEdit, QSizePolicy, QMessageBox,
+        QTextEdit, QSizePolicy, QMessageBox, QApplication,
     )
-    from PyQt5.QtCore import Qt, QThread, QObject, QTimer, QSettings, pyqtSignal as Signal, pyqtSlot as Slot
+    from PyQt5.QtCore import Qt, QThread, QObject, QTimer, QSettings, QUrl, pyqtSignal as Signal, pyqtSlot as Slot
+    from PyQt5.QtGui import QDesktopServices
 except ImportError:
     from PySide6.QtWidgets import (  # type: ignore
         QDockWidget, QWidget, QVBoxLayout, QHBoxLayout,
         QPushButton, QLabel, QComboBox, QLineEdit,
-        QTextEdit, QSizePolicy, QMessageBox,
+        QTextEdit, QSizePolicy, QMessageBox, QApplication,
     )
-    from PySide6.QtCore import Qt, QThread, QObject, QTimer, QSettings, Signal, Slot  # type: ignore
+    from PySide6.QtCore import Qt, QThread, QObject, QTimer, QSettings, QUrl, Signal, Slot  # type: ignore
+    from PySide6.QtGui import QDesktopServices  # type: ignore
 
 from ui.theme import ACCENT, MUTED, TEXT, SUCCESS, WARNING, ERROR, PANEL, BORDER
 
@@ -90,6 +95,11 @@ CHUNK_SECONDS        = 30       # send a WAV chunk to Whisper every N seconds
 
 # Emoji used for poll reactions — indices 0-3 map to candidate date options
 POLL_EMOJIS: Tuple[str, ...] = ("1️⃣", "2️⃣", "3️⃣", "4️⃣")
+
+# Permission bitfield baked into the bot invite URL:
+# Add Reactions · View Channels · Send Messages · Read Message History ·
+# Connect · Speak · Use Voice Activity
+BOT_INVITE_PERMISSIONS = 36_768_832
 
 # ── Persona response pools ─────────────────────────────────────────────────────
 # Keyed by persona name (matches wake word), then by command type.
@@ -495,9 +505,12 @@ class _DiscordWorker(QObject):
     connected             = Signal(str, str)   # guild_name, user_tag
     disconnected          = Signal(str)        # reason
     error                 = Signal(str)        # message
+    guilds_updated        = Signal(list)       # [(guild_id_str, guild_name), ...]
+    invite_url_ready      = Signal(str)        # OAuth2 URL to add the bot to a server
+    vc_left               = Signal()           # bot left the voice channel
     channels_updated      = Signal(list)       # [(ch_id_str, ch_name), ...] voice
     text_channels_updated = Signal(list)       # [(ch_id_str, ch_name), ...] text
-    members_updated       = Signal(list)       # [display_name, ...]
+    members_updated       = Signal(str, list)  # channel_name, [display_name, ...]
     transcript_ready      = Signal(str, str)        # timestamp_str, text
     command_detected      = Signal(str, str, str)   # command_type, raw_text, persona
     spotify_command       = Signal(str, str)   # action, query
@@ -547,6 +560,7 @@ class _DiscordWorker(QObject):
         self._vc = None        # discord.VoiceClient, set when joining VC
         self._sink: Optional[_PCMSink] = None
         self._recording = False
+        self._guild_id: Optional[int] = None           # user-selected guild (None → first)
         self._reply_channel_id: Optional[int] = None   # text channel for persona replies
         # Poll state
         self._poll_message_id: Optional[int] = None
@@ -591,23 +605,22 @@ class _DiscordWorker(QObject):
         async def on_ready() -> None:
             user = self._client.user
             guilds = self._client.guilds
-            guild = guilds[0] if guilds else None
+            self.guilds_updated.emit([(str(g.id), g.name) for g in guilds])
+            if user:
+                self.invite_url_ready.emit(
+                    "https://discord.com/api/oauth2/authorize"
+                    f"?client_id={user.id}"
+                    f"&permissions={BOT_INVITE_PERMISSIONS}&scope=bot"
+                )
+            guild = self._get_guild()
             guild_name = guild.name if guild else "(no guild)"
             self.connected.emit(guild_name, str(user))
             if guild:
-                vcs = [(str(ch.id), ch.name) for ch in guild.voice_channels]
-                self.channels_updated.emit(vcs)
-                tcs = [(str(ch.id), ch.name) for ch in guild.text_channels]
-                self.text_channels_updated.emit(tcs)
-                # Auto-select first text channel as default reply target
-                if tcs and self._reply_channel_id is None:
-                    self._reply_channel_id = int(tcs[0][0])
+                self._emit_channel_lists(guild)
 
         @self._client.event
         async def on_voice_state_update(member, before, after) -> None:  # noqa: ANN001
-            if self._vc and self._vc.channel:
-                names = [m.display_name for m in self._vc.channel.members]
-                self.members_updated.emit(names)
+            self._emit_vc_members()
 
         @self._client.event
         async def on_reaction_add(reaction, user) -> None:   # noqa: ANN001
@@ -713,6 +726,30 @@ class _DiscordWorker(QObject):
                 self._list_text_channels(), self._loop
             )
 
+    def set_active_guild(self, guild_id: int) -> None:
+        """Switch the active server and re-emit its channel lists."""
+        if self._loop:
+            asyncio.run_coroutine_threadsafe(
+                self._set_active_guild(guild_id), self._loop
+            )
+
+    def refresh_channels(self) -> None:
+        """Re-fetch and re-emit voice + text channel lists for the active guild."""
+        if self._loop:
+            asyncio.run_coroutine_threadsafe(self._refresh_channels(), self._loop)
+
+    def leave_voice_channel(self) -> None:
+        """Disconnect from the current voice channel (stops recording first)."""
+        if self._loop:
+            asyncio.run_coroutine_threadsafe(self._leave_vc(), self._loop)
+
+    def set_voice_flags(self, mute: bool, deaf: bool) -> None:
+        """Set the bot's self-mute / self-deafen state in the current VC."""
+        if self._loop:
+            asyncio.run_coroutine_threadsafe(
+                self._set_voice_flags(mute, deaf), self._loop
+            )
+
     def post_poll(
         self, channel_id: int, options: List[Tuple[str, str]], role_name: str
     ) -> None:
@@ -743,14 +780,98 @@ class _DiscordWorker(QObject):
 
     # ── Async helpers: scheduling poll ────────────────────────────────────────
 
-    async def _list_text_channels(self) -> None:
+    def _get_guild(self):
+        """Return the active guild — the user-selected one, else the first."""
         if not self._client:
-            return
+            return None
         guilds = self._client.guilds
-        guild = guilds[0] if guilds else None
+        if not guilds:
+            return None
+        if self._guild_id is not None:
+            for g in guilds:
+                if g.id == self._guild_id:
+                    return g
+        return guilds[0]
+
+    def _emit_channel_lists(self, guild, reset_reply: bool = False) -> None:
+        """Emit voice + text channel lists; (re)set the default reply channel."""
+        vcs = [(str(ch.id), ch.name) for ch in guild.voice_channels]
+        self.channels_updated.emit(vcs)
+        tcs = [(str(ch.id), ch.name) for ch in guild.text_channels]
+        self.text_channels_updated.emit(tcs)
+        if tcs and (reset_reply or self._reply_channel_id is None):
+            self._reply_channel_id = int(tcs[0][0])
+
+    def _emit_vc_members(self) -> None:
+        """Emit the live roster of the voice channel the bot occupies.
+
+        The bot itself is always listed first (marked 🤖 · me), followed by
+        everyone else alphabetically; other bots get a plain 🤖 marker.
+        """
+        if not (self._vc and self._vc.is_connected() and self._vc.channel):
+            self.members_updated.emit("", [])
+            return
+
+        channel = self._vc.channel
+        bot_user = self._client.user if self._client else None
+        bot_id = bot_user.id if bot_user else None
+
+        others: List[str] = []
+        for m in channel.members:
+            if bot_id is not None and m.id == bot_id:
+                continue   # self is added separately, always first
+            name = m.display_name
+            if getattr(m, "bot", False):
+                name = f"🤖 {name}"
+            others.append(name)
+        others.sort(key=str.lower)
+
+        bot_name = getattr(bot_user, "display_name", None) or (
+            str(bot_user) if bot_user else "Bot"
+        )
+        names = [f"🤖 {bot_name} (me)"] + others
+        self.members_updated.emit(channel.name, names)
+
+    async def _list_text_channels(self) -> None:
+        guild = self._get_guild()
         if guild:
             tcs = [(str(ch.id), ch.name) for ch in guild.text_channels]
             self.text_channels_updated.emit(tcs)
+
+    async def _set_active_guild(self, guild_id: int) -> None:
+        self._guild_id = guild_id
+        guild = self._get_guild()
+        if guild:
+            self._emit_channel_lists(guild, reset_reply=True)
+
+    async def _refresh_channels(self) -> None:
+        guild = self._get_guild()
+        if guild:
+            self._emit_channel_lists(guild)
+            self._emit_vc_members()
+
+    async def _leave_vc(self) -> None:
+        if self._recording:
+            await self._stop_rec()
+        if self._vc and self._vc.is_connected():
+            try:
+                await self._vc.disconnect()
+            except Exception as exc:
+                self.error.emit(f"Could not leave voice channel: {exc}")
+                return
+        self._vc = None
+        self.members_updated.emit("", [])
+        self.vc_left.emit()
+
+    async def _set_voice_flags(self, mute: bool, deaf: bool) -> None:
+        if not self._vc or not self._vc.is_connected():
+            return
+        try:
+            await self._vc.channel.guild.change_voice_state(
+                channel=self._vc.channel, self_mute=mute, self_deaf=deaf
+            )
+        except Exception as exc:
+            self.error.emit(f"Voice state error: {exc}")
 
     async def _post_poll(
         self, channel_id: int, options: List[Tuple[str, str]], role_name: str
@@ -863,10 +984,7 @@ class _DiscordWorker(QObject):
     # ── Async helpers ──────────────────────────────────────────────────────────
 
     async def _join_vc(self, channel_id: int) -> None:
-        if not self._client:
-            return
-        guilds = self._client.guilds
-        guild = guilds[0] if guilds else None
+        guild = self._get_guild()
         if not guild:
             return
 
@@ -883,8 +1001,7 @@ class _DiscordWorker(QObject):
                 await self._vc.move_to(channel)
             else:
                 self._vc = await channel.connect()
-            names = [m.display_name for m in channel.members]
-            self.members_updated.emit(names)
+            self._emit_vc_members()
         except Exception as exc:
             self.error.emit(f"Could not join voice channel: {exc}")
 
@@ -942,15 +1059,6 @@ class _DiscordWorker(QObject):
                 self._post_message(self._reply_channel_id, text),
                 self._loop,
             )
-
-    async def _post_message(self, channel_id: int, text: str) -> None:
-        """Coroutine: fetch channel and send text."""
-        try:
-            channel = self._client.get_channel(channel_id)
-            if channel is not None:
-                await channel.send(text)
-        except Exception:
-            pass   # don't crash the bot loop over a reply failure
 
     # ── Audio → Whisper → signals ──────────────────────────────────────────────
 
@@ -1053,6 +1161,7 @@ class DiscordPanel(QDockWidget):
         self._recording = False
         self._record_start: Optional[float] = None
         self._reply_channel_id: Optional[int] = None
+        self._invite_url: str = ""
 
         self._settings = QSettings("ProjectCeres", "GMAssistant")
 
@@ -1110,6 +1219,43 @@ class DiscordPanel(QDockWidget):
         self._status_lbl.setWordWrap(True)
         layout.addWidget(self._status_lbl)
 
+        # ── Server (guild) selector row ───────────────────────────────────
+        server_row = QHBoxLayout()
+
+        server_lbl = QLabel("Server:")
+        server_lbl.setStyleSheet(f"color: {ACCENT}; font-weight: bold;")
+        server_row.addWidget(server_lbl)
+
+        self._server_combo = QComboBox()
+        self._server_combo.setPlaceholderText("— connect first —")
+        self._server_combo.setToolTip(
+            "Active Discord server.\n"
+            "The bot can belong to several servers — pick which one to control."
+        )
+        self._server_combo.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        self._server_combo.currentIndexChanged.connect(self._on_server_changed)
+        server_row.addWidget(self._server_combo)
+
+        self._refresh_btn = QPushButton("🔄")
+        self._refresh_btn.setFixedWidth(28)
+        self._refresh_btn.setEnabled(False)
+        self._refresh_btn.setToolTip("Refresh channel and member lists")
+        self._refresh_btn.clicked.connect(self._on_refresh_channels)
+        server_row.addWidget(self._refresh_btn)
+
+        self._invite_btn = QPushButton("➕ Invite")
+        self._invite_btn.setEnabled(False)
+        self._invite_btn.setToolTip(
+            "Add this bot to another server.\n"
+            "Copies the OAuth invite link to the clipboard and opens it in your browser."
+        )
+        self._invite_btn.clicked.connect(self._on_invite_bot)
+        server_row.addWidget(self._invite_btn)
+
+        layout.addLayout(server_row)
+
         # ── Visual separator ──────────────────────────────────────────────
         layout.addWidget(self._make_sep())
 
@@ -1132,6 +1278,28 @@ class DiscordPanel(QDockWidget):
         self._join_btn.setToolTip("Join selected voice channel")
         self._join_btn.clicked.connect(self._on_join_vc)
         vc_row.addWidget(self._join_btn)
+
+        self._leave_btn = QPushButton("Leave")
+        self._leave_btn.setEnabled(False)
+        self._leave_btn.setToolTip("Leave the current voice channel")
+        self._leave_btn.clicked.connect(self._on_leave_vc)
+        vc_row.addWidget(self._leave_btn)
+
+        self._mute_btn = QPushButton("🎙")
+        self._mute_btn.setFixedWidth(28)
+        self._mute_btn.setCheckable(True)
+        self._mute_btn.setEnabled(False)
+        self._mute_btn.setToolTip("Self-mute the bot in the voice channel")
+        self._mute_btn.clicked.connect(self._on_voice_flags_changed)
+        vc_row.addWidget(self._mute_btn)
+
+        self._deaf_btn = QPushButton("🎧")
+        self._deaf_btn.setFixedWidth(28)
+        self._deaf_btn.setCheckable(True)
+        self._deaf_btn.setEnabled(False)
+        self._deaf_btn.setToolTip("Self-deafen the bot (also stops it hearing audio)")
+        self._deaf_btn.clicked.connect(self._on_voice_flags_changed)
+        vc_row.addWidget(self._deaf_btn)
 
         layout.addLayout(vc_row)
 
@@ -1197,6 +1365,31 @@ class DiscordPanel(QDockWidget):
         reply_row.addWidget(self._reply_channel_combo)
         layout.addLayout(reply_row)
 
+        # ── Send-as-bot message row ───────────────────────────────────────
+        msg_row = QHBoxLayout()
+
+        msg_lbl = QLabel("💬")
+        msg_row.addWidget(msg_lbl)
+
+        self._msg_input = QLineEdit()
+        self._msg_input.setPlaceholderText("Send a message as the bot…")
+        self._msg_input.setToolTip(
+            "Posts to the reply channel selected above.\nPress Enter or click Send."
+        )
+        self._msg_input.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        self._msg_input.returnPressed.connect(self._on_send_message)
+        msg_row.addWidget(self._msg_input)
+
+        self._msg_send_btn = QPushButton("Send")
+        self._msg_send_btn.setEnabled(False)
+        self._msg_send_btn.setToolTip("Send message to the selected reply channel")
+        self._msg_send_btn.clicked.connect(self._on_send_message)
+        msg_row.addWidget(self._msg_send_btn)
+
+        layout.addLayout(msg_row)
+
         # ── Live transcript header ────────────────────────────────────────
         ts_header = QHBoxLayout()
 
@@ -1224,6 +1417,36 @@ class DiscordPanel(QDockWidget):
         )
         self._transcript_view.setMinimumHeight(140)
         layout.addWidget(self._transcript_view)
+
+        # ── Spotify quick-control row ─────────────────────────────────────
+        music_row = QHBoxLayout()
+        music_row.setSpacing(4)
+
+        music_lbl = QLabel("🎵")
+        music_row.addWidget(music_lbl)
+
+        self._music_input = QLineEdit()
+        self._music_input.setPlaceholderText("search track / artist …")
+        self._music_input.setToolTip("Routed to the Spotify panel")
+        self._music_input.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        self._music_input.returnPressed.connect(self._on_music_search)
+        music_row.addWidget(self._music_input)
+
+        for text, tip, handler in (
+            ("▶", "Play (uses search text if given)", self._on_music_play),
+            ("⏸", "Pause playback",                   self._on_music_pause),
+            ("⏭", "Skip to next track",               self._on_music_skip),
+            ("🔍", "Search",                           self._on_music_search),
+        ):
+            btn = QPushButton(text)
+            btn.setFixedWidth(28)
+            btn.setToolTip(tip)
+            btn.clicked.connect(handler)
+            music_row.addWidget(btn)
+
+        layout.addLayout(music_row)
 
         self.setWidget(outer)
 
@@ -1298,6 +1521,9 @@ class DiscordPanel(QDockWidget):
         self._worker.error.connect(self._on_bot_error)
         self._worker.channels_updated.connect(self._on_channels_updated)
         self._worker.members_updated.connect(self._on_members_updated)
+        self._worker.guilds_updated.connect(self._on_guilds_updated)
+        self._worker.invite_url_ready.connect(self._on_invite_url_ready)
+        self._worker.vc_left.connect(self._on_vc_left)
         self._worker.transcript_ready.connect(self._on_transcript_ready)
         self._worker.command_detected.connect(self._on_command_detected)
         self._worker.spotify_command.connect(
@@ -1340,6 +1566,8 @@ class DiscordPanel(QDockWidget):
         self._connect_btn.setEnabled(False)
         self._disconnect_btn.setEnabled(True)
         self._join_btn.setEnabled(True)
+        self._refresh_btn.setEnabled(True)
+        self._msg_send_btn.setEnabled(True)
         self.status_message.emit(f"Discord: connected to {guild}")
 
     def _on_bot_disconnected(self, reason: str) -> None:
@@ -1349,6 +1577,10 @@ class DiscordPanel(QDockWidget):
         self._disconnect_btn.setEnabled(False)
         self._join_btn.setEnabled(False)
         self._record_btn.setEnabled(False)
+        self._refresh_btn.setEnabled(False)
+        self._invite_btn.setEnabled(False)
+        self._msg_send_btn.setEnabled(False)
+        self._reset_vc_controls()
         self._members_lbl.setText("👥  —")
         if self._thread:
             self._thread.quit()
@@ -1383,13 +1615,125 @@ class DiscordPanel(QDockWidget):
             ch_name = self._vc_combo.currentText()
             self._worker.join_voice_channel(int(channel_id))
             self._record_btn.setEnabled(True)
+            self._leave_btn.setEnabled(True)
+            self._mute_btn.setEnabled(True)
+            self._deaf_btn.setEnabled(True)
             self._settings.setValue("discord/last_channel", ch_name)
             self.status_message.emit(f"Discord: joining #{ch_name}")
 
-    def _on_members_updated(self, names: list) -> None:
-        self._members_lbl.setText(
-            "👥  " + "  ·  ".join(names) if names else "👥  (empty channel)"
+    def _on_leave_vc(self) -> None:
+        if self._worker:
+            self._worker.leave_voice_channel()
+
+    def _on_vc_left(self) -> None:
+        """Worker confirmed the bot left the voice channel."""
+        if self._recording:
+            self._on_stop_recording()
+        self._record_btn.setEnabled(False)
+        self._reset_vc_controls()
+        self._members_lbl.setText("👥  —")
+        self.status_message.emit("Discord: left voice channel")
+
+    def _reset_vc_controls(self) -> None:
+        """Disable and un-check the in-VC controls (Leave / mute / deafen)."""
+        self._leave_btn.setEnabled(False)
+        for btn in (self._mute_btn, self._deaf_btn):
+            btn.setEnabled(False)
+            btn.setChecked(False)
+
+    def _on_voice_flags_changed(self) -> None:
+        if self._worker:
+            self._worker.set_voice_flags(
+                self._mute_btn.isChecked(), self._deaf_btn.isChecked()
+            )
+
+    def _on_members_updated(self, channel_name: str, names: list) -> None:
+        """Show the live voice-channel roster: bot first, then everyone else."""
+        if not names:
+            self._members_lbl.setText("👥  —  (not in a voice channel)")
+            return
+        header = f"👥 {len(names)} in 🔊 {channel_name}:   " if channel_name else "👥  "
+        self._members_lbl.setText(header + "  ·  ".join(names))
+
+    # ── Server / invite / refresh slots ───────────────────────────────────────
+
+    def _on_guilds_updated(self, guilds: list) -> None:
+        """Populate the server combo; restore last-used server if possible."""
+        self._server_combo.blockSignals(True)
+        self._server_combo.clear()
+        for g_id, g_name in guilds:
+            self._server_combo.addItem(g_name, userData=int(g_id))
+        saved = self._settings.value("discord/last_guild", "", type=str)
+        if saved:
+            try:
+                idx = self._server_combo.findData(int(saved))
+            except ValueError:
+                idx = -1
+            if idx >= 0:
+                self._server_combo.setCurrentIndex(idx)
+        self._server_combo.blockSignals(False)
+
+        # If a non-default server was restored, sync the worker to it
+        gid = self._server_combo.currentData()
+        if gid is not None and self._server_combo.currentIndex() > 0 and self._worker:
+            self._worker.set_active_guild(int(gid))
+
+    def _on_server_changed(self, index: int) -> None:
+        gid = self._server_combo.itemData(index)
+        if gid is not None and self._worker:
+            self._worker.set_active_guild(int(gid))
+            self._settings.setValue("discord/last_guild", str(gid))
+            self.status_message.emit(
+                f"Discord: server → {self._server_combo.itemText(index)}"
+            )
+
+    def _on_refresh_channels(self) -> None:
+        if self._worker:
+            self._worker.refresh_channels()
+            self.status_message.emit("Discord: refreshing channel lists")
+
+    def _on_invite_url_ready(self, url: str) -> None:
+        self._invite_url = url
+        self._invite_btn.setEnabled(True)
+
+    def _on_invite_bot(self) -> None:
+        """Copy the bot's OAuth invite link and open it in the browser."""
+        if not self._invite_url:
+            return
+        QApplication.clipboard().setText(self._invite_url)
+        QDesktopServices.openUrl(QUrl(self._invite_url))
+        self.status_message.emit(
+            "Discord: invite link copied to clipboard & opened in browser"
         )
+
+    # ── Message / music slots ─────────────────────────────────────────────────
+
+    def _on_send_message(self) -> None:
+        """Post the typed message to the selected reply channel as the bot."""
+        text = self._msg_input.text().strip()
+        if not text or not self._worker:
+            return
+        channel_id = self._reply_channel_combo.currentData()
+        if channel_id is None:
+            self.status_message.emit("Discord: no text channel selected")
+            return
+        self._worker.post_message(int(channel_id), text)
+        self._msg_input.clear()
+        self.status_message.emit("Discord: message sent")
+
+    def _on_music_play(self) -> None:
+        self.spotify_command.emit("play", self._music_input.text().strip())
+
+    def _on_music_pause(self) -> None:
+        self.spotify_command.emit("pause", "")
+
+    def _on_music_skip(self) -> None:
+        self.spotify_command.emit("skip", "")
+
+    def _on_music_search(self) -> None:
+        query = self._music_input.text().strip()
+        if query:
+            self.spotify_command.emit("search", query)
 
     # ── Recording slots ────────────────────────────────────────────────────────
 

@@ -1,5 +1,6 @@
 import os
 import sys
+import tempfile
 import unittest
 
 from ui import theme
@@ -8,7 +9,26 @@ os.environ.setdefault("QT_QPA_PLATFORM", "minimal")
 os.environ.setdefault("QT_OPENGL", "software")
 
 
-class WinampThemeTest(unittest.TestCase):
+class _TempCwdTestCase(unittest.TestCase):
+    """Run each GUI test class from a temp directory so any incidental
+    Config.save_settings() can never overwrite the repo-root settings.json."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls._original_cwd = os.getcwd()
+        cls._tmpdir = tempfile.TemporaryDirectory()
+        os.chdir(cls._tmpdir.name)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        os.chdir(cls._original_cwd)
+        try:
+            cls._tmpdir.cleanup()
+        except OSError:
+            pass
+
+
+class WinampThemeTest(_TempCwdTestCase):
     def test_winamp_palette_exports_reference_colors(self):
         self.assertEqual(theme.BG, "#050608")
         self.assertEqual(theme.PANEL, "#11131b")
@@ -104,7 +124,7 @@ class WinampThemeTest(unittest.TestCase):
             app.processEvents()
 
 
-class MixerWinampLayoutTest(unittest.TestCase):
+class MixerWinampLayoutTest(_TempCwdTestCase):
     def test_mixer_uses_vertical_winamp_sliders(self):
         try:
             from PyQt5.QtCore import Qt
@@ -182,7 +202,7 @@ class MixerWinampLayoutTest(unittest.TestCase):
         self.assertIn("#f3d94e", qss.split("QSlider::add-page:vertical", 1)[1])
 
 
-class EqualizerWinampLayoutTest(unittest.TestCase):
+class EqualizerWinampLayoutTest(_TempCwdTestCase):
     def test_equalizer_uses_compact_framed_content(self):
         try:
             from PyQt5.QtWidgets import QApplication

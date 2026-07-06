@@ -289,7 +289,7 @@ class ChatPanel(QWidget):
         self._worker: Optional[_ChatWorker]  = None
 
         self.setObjectName("ChatPanel")
-        self.setMinimumSize(360, 320)
+        self.setMinimumSize(240, 320)
         self._build_ui()
         self._post_welcome()
 

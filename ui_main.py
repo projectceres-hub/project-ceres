@@ -37,6 +37,11 @@ from pathlib import Path
 _PROJECT_ROOT = Path(__file__).resolve().parent
 _PROJECT_VENV_PYTHON = _PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"
 
+# Settings/vaults are read and written via relative paths (settings.json,
+# vaults.json). Anchor the working directory to the project root so launching
+# from a shortcut or another directory can't read/write the wrong files.
+os.chdir(_PROJECT_ROOT)
+
 
 def _maybe_reexec_project_venv() -> None:
     """Use the project venv when launched through a different Python."""

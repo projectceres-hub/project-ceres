@@ -45,7 +45,7 @@ except ImportError:
 from ui.theme import ACCENT, ACCENT2, BG, BORDER, MUTED, TEXT, PANEL, SURFACE, ERROR
 
 _ASSETS = Path(__file__).resolve().parent.parent / "assets"
-_BASE_MIN_WIDTH = 360
+_BASE_MIN_WIDTH = 240
 _BASE_MIN_HEIGHT = 220
 _BASE_MAX_HEIGHT = 260
 _CHANNEL_COLUMN_WIDTH = 76
@@ -523,6 +523,4 @@ def _apply_mute_btn_style(btn: QPushButton, *, muted: bool) -> None:
         btn.setStyleSheet(
             f"QPushButton {{ background: {SURFACE}; color: {MUTED}; font-size: 11px;"
             f"  border: 1px solid #05060a; border-top-color: #d6dfef;"
-            f"  border-left-color: #d6dfef; border-radius: 1px; }}"
-            f"QPushButton:hover {{ border-color: {ACCENT2}; color: {ACCENT}; }}"
-        )
+            f"  border

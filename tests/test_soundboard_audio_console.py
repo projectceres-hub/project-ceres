@@ -50,7 +50,25 @@ class _PanelWithScenes:
 class SoundboardAudioConsoleTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.app = QApplication.instance() or QApplication([sys.argv[0]])
+        # Run from a temp directory so any incidental Config.save_settings()
+        # can never overwrite the real repo-root settings.json.
+        cls._original_cwd = os.getcwd()
+        cls._tmpdir = tempfile.TemporaryDirectory()
+        os.chdir(cls._tmpdir.name)
+        try:
+            cls.app = QApplication.instance() or QApplication([sys.argv[0]])
+        except BaseException:
+            os.chdir(cls._original_cwd)
+            cls._tmpdir.cleanup()
+            raise
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        os.chdir(cls._original_cwd)
+        try:
+            cls._tmpdir.cleanup()
+        except OSError:
+            pass
 
     def test_soundboard_stacks_horizontal_soundset_and_element_bars_above_scenes(self) -> None:
         panel = SoundboardPanel()

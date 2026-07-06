@@ -21,19 +21,22 @@ try:
     from PyQt5.QtWidgets import (
         QApplication, QMainWindow, QWidget, QLabel, QStatusBar, QMenuBar,
         QAction, QSizePolicy, QDockWidget, QMessageBox, QTabBar, QVBoxLayout,
+        QHBoxLayout, QPushButton,
     )
-    from PyQt5.QtCore import Qt, QSize, QSettings, QRect
+    from PyQt5.QtCore import Qt, QSize, QSettings, QRect, QEvent
     from PyQt5.QtGui import QFont, QIcon, QPalette, QColor
 except ImportError:
     from PySide6.QtWidgets import (  # type: ignore
         QApplication, QMainWindow, QWidget, QLabel, QStatusBar, QMenuBar,
         QAction, QSizePolicy, QDockWidget, QMessageBox, QTabBar, QVBoxLayout,
+        QHBoxLayout, QPushButton,
     )
-    from PySide6.QtCore import Qt, QSize, QSettings, QRect  # type: ignore
+    from PySide6.QtCore import Qt, QSize, QSettings, QRect, QEvent  # type: ignore
     from PySide6.QtGui import QFont, QIcon, QPalette, QColor  # type: ignore
 
 from ui.theme import (
-    ACCENT, BG, PANEL, SURFACE, TEXT, MUTED, BORDER, STYLESHEET
+    ACCENT, BG, PANEL, SURFACE, TEXT, MUTED, BORDER, STYLESHEET,
+    TRANSPARENT_STYLESHEET,
 )
 from ui.panels.vault_notes_panel  import VaultNotesPanel
 from ui.panels.console_panel      import ConsolePanel
@@ -114,6 +117,9 @@ class MainWindow(QMainWindow):
         self._run_command = run_command
         self._last_active_dock_tab_key: Optional[str] = None
         self._panel_visibility_restored = False
+        self._drag_offset = None  # manual window-drag fallback (transparent mode)
+        settings = QSettings("ProjectCeres", "GMAssistant")
+        self._transparent_mode = settings.value("transparentMode", True, type=bool)
 
         self.setWindowTitle(self.APP_NAME)
         self.setMinimumSize(QSize(1100, 900))
@@ -135,6 +141,7 @@ class MainWindow(QMainWindow):
         self._restore_panel_visibility()
         self._panel_visibility_restored_after_show = False
         self._apply_tab_icons()   # must run AFTER restoreState() rebuilds tab bars
+        self._apply_transparent_mode(self._transparent_mode, startup=True)
 
     # ── Central widget — placeholder (Ceres Chat is dockable) ─────────────────
 
@@ -144,6 +151,7 @@ class MainWindow(QMainWindow):
         movable docks can be dropped around it when the GM wants more room.
         """
         placeholder = QWidget()
+        placeholder.setObjectName("CentralPlaceholder")
         placeholder.setMaximumWidth(0)
         placeholder.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
         placeholder.setStyleSheet(f"QWidget {{ background: {BG}; }}")
@@ -155,6 +163,8 @@ class MainWindow(QMainWindow):
         label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
         label.setStyleSheet(f"color: {MUTED}; font-size: 18px;")
         layout.addWidget(label)
+        self._central_placeholder = placeholder
+        self._central_label = label
         self.setCentralWidget(placeholder)
 
     # ── Panels ─────────────────────────────────────────────────────────────────
@@ -169,7 +179,7 @@ class MainWindow(QMainWindow):
 
         self._chat_dock = QDockWidget("Ceres Chat", self)
         self._chat_dock.setObjectName("CeresChatDock")
-        self._chat_dock.setMinimumSize(QSize(360, 350))
+        self._chat_dock.setMinimumSize(QSize(240, 350))
         self._chat_dock.setWidget(self._chat_panel)
         self._chat_dock.setAllowedAreas(
             Qt.DockWidgetArea.LeftDockWidgetArea
@@ -461,7 +471,40 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self._plex_jellyfin_panel.toggleViewAction())
         view_menu.addAction(self._mixer_panel.toggleViewAction())
         view_menu.addSeparator()
+        self._transparent_action = QAction("◱  Transparent Mode", self)
+        self._transparent_action.setCheckable(True)
+        self._transparent_action.setChecked(self._transparent_mode)
+        self._transparent_action.setStatusTip(
+            "See through to the desktop where no panel is docked (frameless window)"
+        )
+        self._transparent_action.toggled.connect(self._set_transparent_mode)
+        view_menu.addAction(self._transparent_action)
         self._add_action(view_menu, "Reset Layout", self._reset_layout)
+
+        # ── Window controls — replace the native title bar in transparent
+        #    (frameless) mode: minimize / maximize / close in the menu-bar corner.
+        self._window_controls = QWidget(mb)
+        controls_layout = QHBoxLayout(self._window_controls)
+        controls_layout.setContentsMargins(0, 2, 4, 2)
+        controls_layout.setSpacing(2)
+        for glyph, tip, slot in (
+            ("–", "Minimize", self.showMinimized),
+            ("□", "Maximize / Restore", self._toggle_max_restore),
+            ("✕", "Close", self.close),
+        ):
+            btn = QPushButton(glyph, self._window_controls)
+            btn.setProperty("class", "media-control")
+            btn.setFixedSize(QSize(22, 18))
+            btn.setToolTip(tip)
+            btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)  # type: ignore[attr-defined]
+            btn.clicked.connect(slot)
+            controls_layout.addWidget(btn)
+        mb.setCornerWidget(self._window_controls, Qt.Corner.TopRightCorner)  # type: ignore[attr-defined]
+        self._window_controls.setVisible(self._transparent_mode)
+
+        # Menu bar doubles as the title bar in frameless mode (drag to move,
+        # double-click to maximize/restore).
+        mb.installEventFilter(self)
 
         # ── Modules menu ──
         mod_menu = mb.addMenu("&Modules")
@@ -508,24 +551,44 @@ class MainWindow(QMainWindow):
     def _build_status_bar(self) -> None:
         sb = QStatusBar()
         sb.setObjectName("MainStatusBar")
+        # Keep the corner size grip: it is the resize handle in frameless
+        # (transparent) mode, where the native window border is gone.
+        sb.setSizeGripEnabled(True)
 
+        # Labels size to content (no stretch) so that in transparent mode they
+        # become compact corner chips with see-through space between them.
         self._status_label = QLabel()
-        self._status_label.setStyleSheet(f"color: {TEXT};")
-        sb.addWidget(self._status_label, 1)
+        sb.addWidget(self._status_label)
+
+        spacer = QWidget()
+        spacer.setStyleSheet("background: transparent;")
+        sb.addWidget(spacer, 1)
 
         self._vault_status = QLabel()
-        self._vault_status.setStyleSheet(f"color: {ACCENT}; font-weight: bold;")
         sb.addPermanentWidget(self._vault_status)
 
         self._version_label = QLabel(f"v{self.VERSION}")
-        self._version_label.setStyleSheet(f"color: {MUTED};")
         sb.addPermanentWidget(self._version_label)
 
+        self._style_status_labels(self._transparent_mode)
         self.setStatusBar(sb)
         self._update_vault_status()
 
+    def _style_status_labels(self, chips: bool) -> None:
+        """Plain text on the full bar, or opaque Winamp chips over transparency."""
+        chip = (
+            f"background: {PANEL}; border: 1px solid {BORDER};"
+            " border-radius: 2px; padding: 1px 8px;"
+        ) if chips else ""
+        self._status_label.setStyleSheet(f"color: {TEXT}; {chip}")
+        self._vault_status.setStyleSheet(f"color: {ACCENT}; font-weight: bold; {chip}")
+        self._version_label.setStyleSheet(f"color: {MUTED}; {chip}")
+        # An empty message would render as a blank chip — hide it instead.
+        self._status_label.setVisible(bool(self._status_label.text()))
+
     def _set_status(self, msg: str) -> None:
         self._status_label.setText(msg)
+        self._status_label.setVisible(bool(msg))
         self._update_vault_status()
 
     def _update_vault_status(self) -> None:
@@ -641,6 +704,91 @@ class MainWindow(QMainWindow):
         self._discord_panel.raise_()
         self._apply_tab_icons()
 
+    # ── Transparent mode ───────────────────────────────────────────────────────
+    # Areas without panels (the central workspace and any gap the GM opens up
+    # by shrinking docks) show the desktop / other apps through the window.
+    # Windows requires FramelessWindowHint for WA_TranslucentBackground to
+    # work, so the menu bar takes over title-bar duties while this is on.
+
+    def _set_transparent_mode(self, enabled: bool) -> None:
+        """View-menu toggle: persist and apply transparent mode."""
+        self._transparent_mode = enabled
+        QSettings("ProjectCeres", "GMAssistant").setValue("transparentMode", enabled)
+        self._apply_transparent_mode(enabled)
+        self._set_status(
+            "Transparent mode on — empty areas show the desktop."
+            if enabled else "Transparent mode off."
+        )
+
+    def _apply_transparent_mode(self, enabled: bool, startup: bool = False) -> None:
+        was_visible = self.isVisible()
+        if not startup and was_visible:
+            self.hide()
+
+        # Attribute first, then the flag change (which recreates the native
+        # window so the attribute actually takes effect at runtime).
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, enabled)  # type: ignore[attr-defined]
+        self.setWindowFlag(Qt.WindowType.FramelessWindowHint, enabled)  # type: ignore[attr-defined]
+        self.setStyleSheet(TRANSPARENT_STYLESHEET if enabled else STYLESHEET)
+
+        # Central placeholder: always collapsed to zero width so the dock
+        # columns on either side of it stay flush — active panels must never
+        # be separable by dragging the two flanking separators apart.
+        self._central_placeholder.setMaximumWidth(0)
+        if enabled:
+            self._central_placeholder.setStyleSheet("QWidget { background: transparent; }")
+            self._central_label.hide()
+        else:
+            self._central_placeholder.setStyleSheet(f"QWidget {{ background: {BG}; }}")
+            self._central_label.show()
+
+        if hasattr(self, "_window_controls"):
+            self._window_controls.setVisible(enabled)
+        if hasattr(self, "_status_label"):
+            self._style_status_labels(enabled)
+
+        if not startup and was_visible:
+            self.show()
+
+    def _toggle_max_restore(self) -> None:
+        if self.isMaximized():
+            self.showNormal()
+        else:
+            self.showMaximized()
+
+    def eventFilter(self, obj, event):  # type: ignore[override]
+        """Menu bar acts as the title bar while frameless: drag moves the window."""
+        if obj is self.menuBar() and self._transparent_mode:
+            etype = event.type()
+            if etype == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:  # type: ignore[attr-defined]
+                if self.menuBar().actionAt(event.pos()) is None:
+                    if not self._start_system_move():
+                        self._drag_offset = self._global_pos(event) - self.frameGeometry().topLeft()
+            elif etype == QEvent.Type.MouseMove and self._drag_offset is not None:
+                if event.buttons() & Qt.MouseButton.LeftButton:  # type: ignore[attr-defined]
+                    self.move(self._global_pos(event) - self._drag_offset)
+            elif etype == QEvent.Type.MouseButtonRelease:
+                self._drag_offset = None
+            elif etype == QEvent.Type.MouseButtonDblClick and event.button() == Qt.MouseButton.LeftButton:  # type: ignore[attr-defined]
+                if self.menuBar().actionAt(event.pos()) is None:
+                    self._toggle_max_restore()
+        return super().eventFilter(obj, event)
+
+    def _start_system_move(self) -> bool:
+        """Native window move (Qt >= 5.15); returns False when unavailable."""
+        handle = self.windowHandle()
+        if handle is not None and hasattr(handle, "startSystemMove"):
+            handle.startSystemMove()
+            return True
+        return False
+
+    @staticmethod
+    def _global_pos(event):
+        """Global cursor position across PyQt5 / PySide6 event APIs."""
+        if hasattr(event, "globalPosition"):
+            return event.globalPosition().toPoint()
+        return event.globalPos()
+
     # ── Window lifecycle ───────────────────────────────────────────────────────
 
     def showEvent(self, event) -> None:  # type: ignore[override]
@@ -751,18 +899,27 @@ class MainWindow(QMainWindow):
         self._panel_visibility_restored = True
 
     def _active_dock_tab_key(self) -> Optional[str]:
-        """Return the persisted key for the currently selected dock tab."""
+        """Return the persisted key for the currently selected dock tab.
+
+        Scans the live dock tab bars FIRST: Qt recreates tab bars on dock
+        moves and user tab clicks are not tracked anywhere else, so the live
+        current tab is the only reliable source of truth. The stored key
+        (set on restore) is used only as a fallback when no tab bar yields
+        a visible dock — otherwise the key saved at startup would shadow
+        every tab change the user made during the session.
+        """
         docks = self._dock_visibility_panels()
+        for tab_bar in self._dock_tab_bars():
+            title = tab_bar.tabText(tab_bar.currentIndex()).strip()
+            key = self._dock_key_for_title(title)
+            if key and docks[key].toggleViewAction().isChecked():
+                self._last_active_dock_tab_key = key
+                return key
         if (
             self._last_active_dock_tab_key in docks
             and docks[self._last_active_dock_tab_key].toggleViewAction().isChecked()
         ):
             return self._last_active_dock_tab_key
-        for tab_bar in self._dock_tab_bars():
-            title = tab_bar.tabText(tab_bar.currentIndex()).strip()
-            key = self._dock_key_for_title(title)
-            if key and docks[key].toggleViewAction().isChecked():
-                return key
         return None
 
     def _dock_tab_bars(self) -> list[QTabBar]:
@@ -861,3 +1018,4 @@ class MainWindow(QMainWindow):
             "Integrates Discord, Obsidian, Fantasy Grounds Unity,<br>"
             "Spotify, Tidal, YouTube, Local Music, and more.",
         )
+                    

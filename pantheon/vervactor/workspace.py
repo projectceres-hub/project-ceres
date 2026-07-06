@@ -104,7 +104,7 @@ class PanelAudioSourceAdapter:
     def get_state(self) -> AudioSourceState:
         raw: Dict[str, Any] = {}
         if hasattr(self._panel, "get_np_state"):
-            raw = dict(self._panel.get_np_state())  # type: ignore[attr-defined]
+            raw = dict(self._panel.get_np_state() or {})  # type: ignore[attr-defined]
         subtitle = str(raw.get("subtitle", ""))
         artist = str(raw.get("artist", "")) or subtitle
         position_ms = int(raw.get("position_ms", 0) or 0)
@@ -121,7 +121,7 @@ class PanelAudioSourceAdapter:
             album=str(raw.get("album", "")),
             position_ms=position_ms,
             duration_ms=duration_ms,
-            playing=bool(raw.get("playing", False)),
+            playing=bool(raw.get("playing", raw.get("is_playing", False))),
             paused=bool(raw.get("paused", False)),
             volume=int(raw.get("volume", 100) or 100),
             can_pause=bool(raw.get("can_pause", False)),
@@ -149,6 +149,22 @@ class PanelAudioSourceAdapter:
 
     def previous(self) -> None:
         self._command("previous", "")
+
+    def get_volume(self) -> int:
+        """Return the panel's volume 0-100, or -1 when unsupported."""
+        if hasattr(self._panel, "get_volume"):
+            try:
+                return max(0, min(100, int(self._panel.get_volume())))  # type: ignore[attr-defined]
+            except Exception:
+                pass
+        return -1
+
+    def set_volume(self, value: int) -> None:
+        if hasattr(self._panel, "set_volume"):
+            try:
+                self._panel.set_volume(max(0, min(100, int(value))))  # type: ignore[attr-defined]
+            except Exception:
+                pass
 
     def _command(self, action: str, query: str) -> None:
         if hasattr(self._panel, "handle_command"):

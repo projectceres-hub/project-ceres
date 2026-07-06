@@ -90,7 +90,7 @@ class VaultNotesPanel(QDockWidget):
         self._forward_stack: List[Path] = []
 
         self.setObjectName("VaultNotesPanel")
-        self.setMinimumSize(360, 260)
+        self.setMinimumSize(240, 260)
         self.setAllowedAreas(
             Qt.DockWidgetArea.LeftDockWidgetArea
             | Qt.DockWidgetArea.RightDockWidgetArea
@@ -110,7 +110,7 @@ class VaultNotesPanel(QDockWidget):
 
     def _build_ui(self) -> None:
         container = QWidget()
-        container.setMinimumSize(360, 230)
+        container.setMinimumSize(240, 230)
         root_layout = QVBoxLayout(container)
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
@@ -126,7 +126,7 @@ class VaultNotesPanel(QDockWidget):
 
     def _build_browser_page(self) -> QWidget:
         page = QWidget()
-        page.setMinimumSize(360, 230)
+        page.setMinimumSize(240, 230)
         layout = QVBoxLayout(page)
         layout.setContentsMargins(6, 6, 6, 6)
         layout.setSpacing(5)
@@ -267,9 +267,21 @@ class VaultNotesPanel(QDockWidget):
         for name, path in vaults.items():
             self._vault_combo.addItem(name, userData=path)
         current = self._config.current_vault
+        if vaults and (not current or current not in vaults):
+            # Config references a vault that no longer exists. The combo will
+            # sit on index 0, and re-selecting index 0 fires no
+            # currentIndexChanged — so sync + persist the fallback here, or
+            # config and the combo would disagree forever.
+            current = next(iter(vaults))
+            self._config.current_vault = current
+            if hasattr(self._config, "save_settings"):
+                self._config.save_settings()
         if current and current in vaults:
             idx = list(vaults.keys()).index(current)
             self._vault_combo.setCurrentIndex(idx)
+            path = vaults[current]
+            if path:
+                self._current_vault_path = Path(path)
         self._vault_combo.blockSignals(False)
 
     def refresh_vault_selector(self) -> None:

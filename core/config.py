@@ -168,6 +168,22 @@ class Config:
                 self.current_vault = next(iter(self.vaults), None)
                 self.ignored_vaults = []
 
+        # Fallback: settings.json may reference a vault that no longer exists
+        # in vaults.json (renamed/removed vault, or a stale test artifact).
+        # Reset to the first available vault and persist so config and the
+        # vault selector can never disagree.
+        stale_vault_repaired = False
+        with self._lock:
+            if self.vaults and self.current_vault not in self.vaults:
+                print(
+                    f"Warning: current_vault '{self.current_vault}' not found in "
+                    f"registered vaults; falling back to first available vault."
+                )
+                self.current_vault = next(iter(self.vaults))
+                stale_vault_repaired = True
+        if stale_vault_repaired:
+            self.save_settings()
+
         # Load OpenAI key from environment if not set
         if self.openai_key is None:
             try:

@@ -79,6 +79,17 @@ QDockWidget::close-button:hover, QDockWidget::float-button:hover {{
     background: {ACCENT2};
 }}
 
+/* Dock-area separators (the draggable gaps between docked panels) */
+QMainWindow::separator {{
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 {CHROME_LITE}, stop:0.5 {CHROME_MID}, stop:1 {SHADOW});
+    width: 4px;
+    height: 4px;
+}}
+QMainWindow::separator:hover {{
+    background: {ACCENT2};
+}}
+
 /* Splitter */
 QSplitter::handle {{
     background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
@@ -114,6 +125,26 @@ QLabel[class="section-header"] {{
 QLabel[class="muted"] {{
     color: {MUTED};
     font-size: 10px;
+}}
+
+/* LCD readout wells (Winamp track display) */
+QLabel[class="lcd"], QLabel[class="lcd-dim"] {{
+    background: {BLACK_WELL};
+    border: 1px solid {SHADOW};
+    border-top-color: #000000;
+    border-left-color: #000000;
+    border-right-color: {BORDER};
+    border-bottom-color: {BORDER};
+    border-radius: 1px;
+    padding: 2px 6px;
+    font-family: Consolas, "Fira Code", "Courier New", monospace;
+    font-size: 11px;
+}}
+QLabel[class="lcd"] {{
+    color: {ACCENT};
+}}
+QLabel[class="lcd-dim"] {{
+    color: #1e7a33;
 }}
 
 /* Buttons */
@@ -591,3 +622,8 @@ QSpinBox:focus, QDoubleSpinBox:focus {{
     border-color: {ACCENT2};
 }}
 """
+
+# ── Transparent mode ──
+# Appended to STYLESHEET when "Transparent Mode" is on. The main window itself
+# stops painting a background so areas without panels show the desktop through
+# the (frameless, WA_TranslucentBackground) window. Panel

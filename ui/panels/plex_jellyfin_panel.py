@@ -1183,20 +1183,35 @@ class PlexJellyfinPanel(QDockWidget):
         """Called by MixerPanel."""
         return self._volume
 
-    def get_np_state(self) -> Optional[Dict]:
+    def get_np_state(self) -> Dict:
         """Called by NowPlayingPanel (2-second poll)."""
         if not _PYGAME_OK or self._current_track is None:
-            return None
+            return {
+                "title": "",
+                "playing": False,
+                "paused": False,
+                "can_pause": False,
+                "can_next": False,
+                "can_prev": False,
+                "can_stop": False,
+            }
         busy = _pygame.mixer.music.get_busy()
         pos  = _pygame.mixer.music.get_pos()
+        paused = (not busy) and self._np_status.text() == "Paused"
+        has_queue = bool(self._queue)
         return {
             "title":       self._current_track.get("title", ""),
             "artist":      self._current_track.get("artist", ""),
             "album":       self._current_track.get("album", ""),
-            "is_playing":  busy,
+            "playing":     busy,
+            "paused":      paused,
             "position_ms": max(pos, 0),
             "duration_ms": self._duration_ms,
             "art_url":     None,
+            "can_pause":   True,
+            "can_next":    has_queue and self._queue_pos + 1 < len(self._queue),
+            "can_prev":    has_queue and self._queue_pos > 0,
+            "can_stop":    True,
         }
 
     # ── Discord handle_command ─────────────────────────────────────────────────
@@ -1220,6 +1235,8 @@ class PlexJellyfinPanel(QDockWidget):
             self._cmd_stop()
         elif action == "next":
             self._cmd_next()
+        elif action == "previous":
+            self._cmd_prev()
         elif action == "search" and query:
             self._search_edit.setText(query)
             self._do_search()
