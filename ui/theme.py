@@ -626,4 +626,22 @@ QSpinBox:focus, QDoubleSpinBox:focus {{
 # ── Transparent mode ──
 # Appended to STYLESHEET when "Transparent Mode" is on. The main window itself
 # stops painting a background so areas without panels show the desktop through
-# the (frameless, WA_TranslucentBackground) window. Panel
+# the (frameless, WA_TranslucentBackground) window. Panels stay opaque because
+# every child widget still gets its background from the rules above.
+TRANSPARENT_EXTRA = """
+QMainWindow {
+    background: transparent;
+}
+
+/* Status bar collapses to corner chips: the bar itself vanishes and only
+   the individual status labels (styled as chips in main_window.py) remain. */
+QStatusBar#MainStatusBar {
+    background: transparent;
+    border-top: none;
+}
+QStatusBar#MainStatusBar QSizeGrip {
+    background: transparent;
+}
+"""
+
+TRANSPARENT_STYLESHEET = STYLESHEET + TRANSPARENT_EXTRA

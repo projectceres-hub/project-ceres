@@ -1018,4 +1018,3 @@ class MainWindow(QMainWindow):
             "Integrates Discord, Obsidian, Fantasy Grounds Unity,<br>"
             "Spotify, Tidal, YouTube, Local Music, and more.",
         )
-                    

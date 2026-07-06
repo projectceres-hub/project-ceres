@@ -523,4 +523,6 @@ def _apply_mute_btn_style(btn: QPushButton, *, muted: bool) -> None:
         btn.setStyleSheet(
             f"QPushButton {{ background: {SURFACE}; color: {MUTED}; font-size: 11px;"
             f"  border: 1px solid #05060a; border-top-color: #d6dfef;"
-            f"  border
+            f"  border-left-color: #d6dfef; border-radius: 1px; }}"
+            f"QPushButton:hover {{ border-color: {ACCENT2}; color: {ACCENT}; }}"
+        )
